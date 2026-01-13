@@ -48,8 +48,7 @@ param(
     [Parameter(Mandatory = $false)][switch]$RunOnce,
     [Parameter(Mandatory = $false)][int]$Iterations = 0,
     [Parameter(Mandatory = $false)][int]$MaxRetries = 3,
-    [Parameter(Mandatory = $false)][switch]$SkipTimeSync,
-    [Parameter(Mandatory = $false)][switch]$Verbose
+    [Parameter(Mandatory = $false)][switch]$SkipTimeSync
 )
 
 $script:Config = @{
@@ -129,7 +128,7 @@ $script:TimeAdjustment = [TimeSpan]::Zero
 $script:ErrorCount = 0
 $script:SuccessCount = 0
 $script:FailedIterations = @()
-$script:VerboseLogging = $Verbose
+$script:VerboseLogging = ($VerbosePreference -eq 'Continue')
 
 function Write-Log { param([string]$Message, [ValidateSet("INFO","WARN","ERROR","DEBUG","SUCCESS","VERBOSE")][string]$Level="INFO")
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"; $e = "[$ts] [$Level] $Message"
