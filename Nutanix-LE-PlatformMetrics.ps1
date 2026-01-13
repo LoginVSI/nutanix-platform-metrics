@@ -24,8 +24,23 @@
 .PARAMETER LEApiVersion
     Login Enterprise API version to use. Default: v8-preview
 
+.PARAMETER EnvironmentIdPercent
+    Override environment ID for percent metrics (CPU, Memory)
+
+.PARAMETER EnvironmentIdIops
+    Override environment ID for IOPS metrics
+
+.PARAMETER EnvironmentIdMs
+    Override environment ID for latency metrics (ms)
+
+.PARAMETER EnvironmentIdKBps
+    Override environment ID for bandwidth metrics (kBps)
+
 .EXAMPLE
     .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
+
+.EXAMPLE
+    .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -NutanixHost "10.0.0.1" -LEApplianceUrl "https://le.example.com" -EnvironmentIdPercent "your-env-id" -RunOnce
 
 .NOTES
     Version: 1.4.0 | Author: Login VSI | January 2026
@@ -40,6 +55,10 @@ param(
     [Parameter(Mandatory = $false)][string]$NutanixUser,
     [Parameter(Mandatory = $false)][string]$LEApplianceUrl,
     [Parameter(Mandatory = $false)][string]$LEApiVersion,
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdPercent,
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdIops,
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdMs,
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdKBps,
     [Parameter(Mandatory = $false)][string]$ConfigFile,
     [Parameter(Mandatory = $false)][int]$PollingIntervalSec,
     [Parameter(Mandatory = $false)][string]$LogDir,
@@ -98,6 +117,10 @@ if ($NutanixHost) { $script:Config.NutanixHost = $NutanixHost }
 if ($NutanixUser) { $script:Config.NutanixUser = $NutanixUser }
 if ($LEApplianceUrl) { $script:Config.LEApplianceUrl = $LEApplianceUrl }
 if ($LEApiVersion) { $script:Config.LEApiVersion = $LEApiVersion }
+if ($EnvironmentIdPercent) { $script:Config.EnvironmentIds["percent"] = $EnvironmentIdPercent }
+if ($EnvironmentIdIops) { $script:Config.EnvironmentIds["iops"] = $EnvironmentIdIops }
+if ($EnvironmentIdMs) { $script:Config.EnvironmentIds["ms"] = $EnvironmentIdMs }
+if ($EnvironmentIdKBps) { $script:Config.EnvironmentIds["kBps"] = $EnvironmentIdKBps }
 if ($PollingIntervalSec -gt 0) { $script:Config.PollingIntervalSec = $PollingIntervalSec }
 if ($LogDir) { $script:Config.LogDir = $LogDir }
 if ($SaveRawResponse) { $script:Config.SaveRawResponse = $true }

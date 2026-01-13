@@ -148,6 +148,18 @@ In Login Enterprise:
 # Run once (for testing)
 .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
 
+# Override all values from command line (no JSON config needed)
+.\Nutanix-LE-PlatformMetrics.ps1 `
+    -NutanixPassword "pass" `
+    -LEApiToken "token" `
+    -NutanixHost "10.0.0.1" `
+    -LEApplianceUrl "https://le.example.com" `
+    -EnvironmentIdPercent "env-id-1" `
+    -EnvironmentIdIops "env-id-2" `
+    -EnvironmentIdMs "env-id-3" `
+    -EnvironmentIdKBps "env-id-4" `
+    -RunOnce
+
 # Dry run (fetch but don't upload)
 .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -DryRun -RunOnce
 
@@ -244,6 +256,10 @@ The script uses a **3-tier priority system** for configuration:
 | `-NutanixHost` | No | Override Nutanix host |
 | `-LEApplianceUrl` | No | Override LE appliance URL |
 | `-LEApiVersion` | No | LE API version (default: v8-preview) |
+| `-EnvironmentIdPercent` | No | Override environment ID for percent metrics |
+| `-EnvironmentIdIops` | No | Override environment ID for IOPS metrics |
+| `-EnvironmentIdMs` | No | Override environment ID for latency metrics |
+| `-EnvironmentIdKBps` | No | Override environment ID for bandwidth metrics |
 | `-PollingIntervalSec` | No | Override polling interval |
 | `-RunOnce` | No | Run once and exit |
 | `-Iterations` | No | Run N times and exit |
