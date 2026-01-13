@@ -53,15 +53,15 @@ param(
 )
 
 $script:Config = @{
-    NutanixHost     = "10.30.15.202"
+    NutanixHost     = "your-nutanix-prism.example.com"
     NutanixUser     = "admin"
-    LEApplianceUrl  = "https://bpleva02.southcentralus.cloudapp.azure.com"
+    LEApplianceUrl  = "https://your-le-appliance.example.com"
     LEApiVersion    = "v8-preview"
     EnvironmentIds  = @{
-        "percent" = "1ceef39e-aa91-4d87-abbc-21d6eec7306b"
-        "iops"    = "98570b62-ffeb-4dbb-89ae-2ad7647302f6"
-        "ms"      = "31b723a5-ee65-4a7e-844c-e0536246a96a"
-        "kBps"    = "c4b70fcc-ea9c-4531-8203-9784f9ff75fc"
+        "percent" = "00000000-0000-0000-0000-000000000001"
+        "iops"    = "00000000-0000-0000-0000-000000000002"
+        "ms"      = "00000000-0000-0000-0000-000000000003"
+        "kBps"    = "00000000-0000-0000-0000-000000000004"
     }
     PollingIntervalSec = 30
     MaxRetries      = 3

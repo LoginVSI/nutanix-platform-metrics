@@ -27,7 +27,7 @@ param(
     [Parameter(Mandatory = $false)][string]$StartTime,
     [Parameter(Mandatory = $false)][string]$EndTime,
     [Parameter(Mandatory = $false)][string]$EnvironmentId,
-    [Parameter(Mandatory = $false)][string]$BaseUrl = "https://bpleva02.southcentralus.cloudapp.azure.com",
+    [Parameter(Mandatory = $false)][string]$BaseUrl = "https://your-le-appliance.example.com",
     [Parameter(Mandatory = $false)][string]$LEApiVersion = "v8-preview",
     [Parameter(Mandatory = $false)][int]$LastHours = 1,
     [Parameter(Mandatory = $false)][string[]]$MetricGroups,
@@ -41,12 +41,11 @@ $CsvPath = Join-Path $OutputDir "PlatformMetrics_$Timestamp.csv"
 $JsonPath = Join-Path $OutputDir "PlatformMetrics_$Timestamp.json"
 
 # Default environment IDs if none specified
-# WARNING: These are Joshua's test values. Before public release, replace with generic placeholders!
 $DefaultEnvironmentIds = @(
-    "1ceef39e-aa91-4d87-abbc-21d6eec7306b",  # percent
-    "98570b62-ffeb-4dbb-89ae-2ad7647302f6",  # iops
-    "31b723a5-ee65-4a7e-844c-e0536246a96a",  # ms
-    "c4b70fcc-ea9c-4531-8203-9784f9ff75fc"   # kBps
+    "00000000-0000-0000-0000-000000000001",  # percent
+    "00000000-0000-0000-0000-000000000002",  # iops
+    "00000000-0000-0000-0000-000000000003",  # ms
+    "00000000-0000-0000-0000-000000000004"   # kBps
 )
 
 Write-Host "`n========================================================================" -ForegroundColor Cyan
