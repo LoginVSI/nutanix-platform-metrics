@@ -1,0 +1,21 @@
+{
+    "_comment": "Nutanix to Login Enterprise Platform Metrics - Configuration File",
+    "_note": "Sensitive values (NutanixPassword, LEApiToken) are NOT stored here - pass via command line",
+    "_warning": "WARNING: BEFORE COMMITTING TO PUBLIC REPO: Replace these test values with generic placeholders!",
+    
+    "NutanixHost": "10.30.15.202",
+    "NutanixUser": "admin",
+    "LEApplianceUrl": "https://bpleva02.southcentralus.cloudapp.azure.com",
+    "LEApiVersion": "v8-preview",
+    
+    "EnvironmentIds": {
+        "percent": "1ceef39e-aa91-4d87-abbc-21d6eec7306b",
+        "iops": "98570b62-ffeb-4dbb-89ae-2ad7647302f6",
+        "ms": "31b723a5-ee65-4a7e-844c-e0536246a96a",
+        "kBps": "c4b70fcc-ea9c-4531-8203-9784f9ff75fc"
+    },
+    
+    "PollingIntervalSec": 30,
+    "MaxRetries": 3,
+    "SkipTimeSync": false
+}
