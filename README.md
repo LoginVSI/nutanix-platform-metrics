@@ -178,11 +178,21 @@ In Login Enterprise:
 Use the retrieval script to export Platform Metrics data:
 
 ```powershell
-# Get last hour of data
-.\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -LastHours 1
+# Get last hour from all 4 environments
+.\Get-LEPlatformMetrics.ps1 `
+    -LEApiToken "token" `
+    -BaseUrl "https://le.example.com" `
+    -EnvironmentIdPercent "env-id-1" `
+    -EnvironmentIdIops "env-id-2" `
+    -EnvironmentIdMs "env-id-3" `
+    -EnvironmentIdKBps "env-id-4" `
+    -LastHours 1
 
-# Get last 24 hours
+# Get last 24 hours (uses generic placeholder IDs if not specified)
 .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -LastHours 24
+
+# Query single environment only
+.\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -EnvironmentId "specific-env-id" -LastHours 1
 
 # Filter by metric group
 .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -LastHours 24 -MetricGroups @("Nutanix")

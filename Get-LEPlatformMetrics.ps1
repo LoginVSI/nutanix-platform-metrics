@@ -8,6 +8,21 @@
     
 .PARAMETER LEApiToken
     REQUIRED. Login Enterprise API token.
+
+.PARAMETER EnvironmentId
+    Single environment ID to query (queries one environment only)
+
+.PARAMETER EnvironmentIdPercent
+    Environment ID for percent metrics (can combine with other -EnvironmentId* params)
+
+.PARAMETER EnvironmentIdIops
+    Environment ID for IOPS metrics (can combine with other -EnvironmentId* params)
+
+.PARAMETER EnvironmentIdMs
+    Environment ID for latency metrics (can combine with other -EnvironmentId* params)
+
+.PARAMETER EnvironmentIdKBps
+    Environment ID for bandwidth metrics (can combine with other -EnvironmentId* params)
     
 .PARAMETER LastHours
     Retrieve metrics from last N hours. Default: 1
@@ -18,6 +33,9 @@
 .EXAMPLE
     .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -LastHours 1
 
+.EXAMPLE
+    .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -BaseUrl "https://le.example.com" -EnvironmentIdPercent "env-id-1" -EnvironmentIdIops "env-id-2" -EnvironmentIdMs "env-id-3" -EnvironmentIdKBps "env-id-4" -LastHours 1
+
 .NOTES
     Version: 1.2.0 | Author: Login VSI | January 2026
 #>
@@ -27,6 +45,10 @@ param(
     [Parameter(Mandatory = $false)][string]$StartTime,
     [Parameter(Mandatory = $false)][string]$EndTime,
     [Parameter(Mandatory = $false)][string]$EnvironmentId,
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdPercent,
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdIops,
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdMs,
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdKBps,
     [Parameter(Mandatory = $false)][string]$BaseUrl = "https://your-le-appliance.example.com",
     [Parameter(Mandatory = $false)][string]$LEApiVersion = "v8-preview",
     [Parameter(Mandatory = $false)][int]$LastHours = 1,
@@ -40,13 +62,26 @@ $Timestamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
 $CsvPath = Join-Path $OutputDir "PlatformMetrics_$Timestamp.csv"
 $JsonPath = Join-Path $OutputDir "PlatformMetrics_$Timestamp.json"
 
-# Default environment IDs if none specified
-$DefaultEnvironmentIds = @(
-    "00000000-0000-0000-0000-000000000001",  # percent
-    "00000000-0000-0000-0000-000000000002",  # iops
-    "00000000-0000-0000-0000-000000000003",  # ms
-    "00000000-0000-0000-0000-000000000004"   # kBps
-)
+# Build environment ID list from parameters
+$EnvironmentIds = @()
+if ($EnvironmentId) {
+    # Single environment specified
+    $EnvironmentIds = @($EnvironmentId)
+} elseif ($EnvironmentIdPercent -or $EnvironmentIdIops -or $EnvironmentIdMs -or $EnvironmentIdKBps) {
+    # Individual environment IDs specified
+    if ($EnvironmentIdPercent) { $EnvironmentIds += $EnvironmentIdPercent }
+    if ($EnvironmentIdIops) { $EnvironmentIds += $EnvironmentIdIops }
+    if ($EnvironmentIdMs) { $EnvironmentIds += $EnvironmentIdMs }
+    if ($EnvironmentIdKBps) { $EnvironmentIds += $EnvironmentIdKBps }
+} else {
+    # Use defaults
+    $EnvironmentIds = @(
+        "00000000-0000-0000-0000-000000000001",  # percent
+        "00000000-0000-0000-0000-000000000002",  # iops
+        "00000000-0000-0000-0000-000000000003",  # ms
+        "00000000-0000-0000-0000-000000000004"   # kBps
+    )
+}
 
 Write-Host "`n========================================================================" -ForegroundColor Cyan
 Write-Host "  Login Enterprise Platform Metrics Retrieval Tool v$Version" -ForegroundColor Cyan
@@ -73,13 +108,10 @@ public class TrustAllCertsPolicy : ICertificatePolicy { public bool CheckValidat
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 }
 
-# Determine which environments to query
-$envIds = if ($EnvironmentId) { @($EnvironmentId) } else { $DefaultEnvironmentIds }
-
 $AllResults = @()
 $AllDataRows = @()
 
-foreach ($envId in $envIds) {
+foreach ($envId in $EnvironmentIds) {
     Write-Host "`nQuerying environment: $envId" -ForegroundColor Yellow
     
     $queryParams = @(
