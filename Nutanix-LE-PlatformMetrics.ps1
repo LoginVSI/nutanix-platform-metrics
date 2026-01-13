@@ -147,7 +147,6 @@ function Write-Log { param([string]$Message, [ValidateSet("INFO","WARN","ERROR",
     }
     try { Add-Content -Path $script:LogFile -Value $e -ErrorAction SilentlyContinue } catch {}
 }
-}
 
 function Write-ErrorDetails { param([System.Management.Automation.ErrorRecord]$ErrorRecord)
     Write-Log "ERROR DETAILS:" -Level ERROR
