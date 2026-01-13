@@ -353,10 +353,4 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Disclaimer
 
-This is a community-supported prototype integration. Use at your own risk. 
-
-For Login Enterprise product support, contact: support@loginvsi.com
-
-## Contributing
-
-Contributions welcome! Please submit issues and pull requests to the GitHub repository.
+This is a community-supported prototype integration. Use at your own risk.
