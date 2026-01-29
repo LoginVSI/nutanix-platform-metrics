@@ -135,12 +135,58 @@ In Login Enterprise:
     -LEApplianceUrl "https://your-le-appliance.example.com"
 ```
 
+#### Option C: With Self-Signed Certificate (Recommended for Enterprise)
+
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 `
+    -NutanixPassword "YourPass" `
+    -LEApiToken "YourToken" `
+    -NutanixHost "your-nutanix-prism.example.com" `
+    -LEApplianceUrl "https://your-le-appliance.example.com" `
+    -ImportServerCert `
+    -RunOnce
+```
+
 ### 5. View Results
 
 1. Open Login Enterprise web UI
 2. Navigate to your continuous test linked to one of the environments
 3. Click on Platform Metrics tab
 4. View the graphs (open multiple tabs for different unit types)
+
+## Certificate Handling (New in v1.5.0)
+
+### Why Certificate Handling Matters
+
+Login Enterprise appliances often use self-signed certificates in enterprise environments. The scripts provide flexible certificate handling options to support different security requirements.
+
+### Certificate Options
+
+**Default Behavior** (No cert handling):
+- Works for appliances with valid, trusted certificates
+- May fail with self-signed certificates
+
+**With `-ImportServerCert`:**
+- Imports Login Enterprise appliance certificate into CurrentUser\Root trust store
+- Proper way to handle self-signed certificates
+- Certificate is automatically removed after script completes (unless `-KeepCert` specified)
+
+**With `-ImportServerCert -KeepCert`:**
+- Imports certificate and keeps it permanently
+- Useful for repeated runs without re-importing
+
+### Certificate Examples
+
+```powershell
+# Self-signed cert (temporary import)
+.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ImportServerCert -RunOnce
+
+# Self-signed cert (keep permanently)
+.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ImportServerCert -KeepCert -RunOnce
+
+# Trusted cert (no import needed)
+.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
+```
 
 ## Usage Examples
 
@@ -171,6 +217,9 @@ In Login Enterprise:
 
 # Continuous polling (Ctrl+C to stop)
 .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token"
+
+# With verbose logging
+.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -Verbose -RunOnce
 ```
 
 ## Retrieving Metrics
@@ -178,7 +227,7 @@ In Login Enterprise:
 Use the retrieval script to export Platform Metrics data:
 
 ```powershell
-# Get last hour from all 4 environments
+# Get last hour from all 4 environments (with cert handling)
 .\Get-LEPlatformMetrics.ps1 `
     -LEApiToken "token" `
     -BaseUrl "https://le.example.com" `
@@ -186,6 +235,7 @@ Use the retrieval script to export Platform Metrics data:
     -EnvironmentIdIops "env-id-2" `
     -EnvironmentIdMs "env-id-3" `
     -EnvironmentIdKBps "env-id-4" `
+    -ImportServerCert `
     -LastHours 1
 
 # Get last 24 hours (uses generic placeholder IDs if not specified)
@@ -258,10 +308,14 @@ The script uses a **3-tier priority system** for configuration:
 
 ### Command Line Parameters (Override JSON)
 
+#### Collector Script
+
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `-NutanixPassword` | **YES** | Nutanix admin password (never stored) |
 | `-LEApiToken` | **YES** | Login Enterprise API token (never stored) |
+| `-ImportServerCert` | No | Import LE appliance certificate (for self-signed certs) |
+| `-KeepCert` | No | Keep imported certificate after script ends |
 | `-ConfigFile` | No | Path to JSON config file |
 | `-NutanixHost` | No | Override Nutanix host |
 | `-LEApplianceUrl` | No | Override LE appliance URL |
@@ -278,12 +332,27 @@ The script uses a **3-tier priority system** for configuration:
 | `-SaveRawResponse` | No | Save Nutanix API response to JSON |
 | `-Verbose` | No | Enable detailed logging for debugging |
 
+#### Retrieval Script
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `-LEApiToken` | **YES** | Login Enterprise API token |
+| `-ImportServerCert` | No | Import LE appliance certificate |
+| `-KeepCert` | No | Keep imported certificate |
+| `-BaseUrl` | No | Login Enterprise appliance URL |
+| `-EnvironmentIdPercent` | No | Environment ID for percent metrics |
+| `-EnvironmentIdIops` | No | Environment ID for IOPS metrics |
+| `-EnvironmentIdMs` | No | Environment ID for latency metrics |
+| `-EnvironmentIdKBps` | No | Environment ID for bandwidth metrics |
+| `-LastHours` | No | Retrieve last N hours (default: 1) |
+| `-MetricGroups` | No | Filter by metric groups |
+
 ## Files
 
 | File | Description |
 |------|-------------|
-| `Nutanix-LE-PlatformMetrics.ps1` | Main collector script |
-| `Get-LEPlatformMetrics.ps1` | Metrics retrieval/export script |
+| `Nutanix-LE-PlatformMetrics.ps1` | Main collector script (v1.5.0) |
+| `Get-LEPlatformMetrics.ps1` | Metrics retrieval/export script (v1.3.0) |
 | `nutanix-config.json` | Configuration file (non-sensitive settings) |
 | `README.md` | This file |
 
@@ -291,8 +360,8 @@ The script uses a **3-tier priority system** for configuration:
 
 - **Passwords and API tokens are NEVER stored in config files or scripts**
 - Sensitive credentials must be passed via command line parameters
-- Collector script uses API token authentication (no certificate handling needed)
-- Retrieval script handles self-signed certificates automatically
+- Certificate import uses CurrentUser\Root store (no admin required)
+- Imported certificates are automatically removed unless `-KeepCert` specified
 - No admin privileges required
 
 ## Logs
@@ -302,6 +371,17 @@ Each run creates:
 - `Nutanix-LE-Metrics_YYYYMMDD_HHMMSS_transcript.log` - Full PowerShell transcript
 
 ## Troubleshooting
+
+### Certificate Errors (New in v1.5.0)
+
+**Symptom:** `System.Security.Cryptography.X509Certificates` errors
+
+**Solution:** Use the `-ImportServerCert` flag:
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ImportServerCert -RunOnce
+```
+
+This properly imports the Login Enterprise appliance's self-signed certificate into your trust store.
 
 ### Debugging with Verbose Mode
 
@@ -314,26 +394,28 @@ For detailed diagnostic information, use the `-Verbose` flag:
 This shows:
 - URL validation results
 - API request/response timing
+- Certificate import details (if using `-ImportServerCert`)
 - Detailed upload progress
 - Configuration validation steps
 
 ### Common Issues
 
-### 500 Internal Server Error
+#### 500 Internal Server Error
 - The environment ID may be invalid or broken
 - Try creating a new environment in Login Enterprise
 
-### Connection refused to Nutanix
+#### Connection refused to Nutanix
 - Verify Nutanix host is reachable on port 9440
 - Check VPN connectivity if required
 
-### No data in Platform Metrics UI
+#### No data in Platform Metrics UI
 - Ensure the feature flag is enabled
 - Verify the environment is linked to a continuous test
 - Check that the test is in the correct time range
 
 ## Version History
 
+- **1.5.0** - Enterprise-grade certificate handling, `-ImportServerCert` and `-KeepCert` parameters
 - **1.4.0** - Enhanced error handling, verbose mode, rate limit detection, graceful Ctrl+C, exit codes
 - **1.3.0** - Required command line params for sensitive data, config file support
 - **1.2.0** - Multi-environment support, time sync, retry logic

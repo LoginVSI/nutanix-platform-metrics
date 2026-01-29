@@ -21,29 +21,20 @@
 .PARAMETER ConfigFile
     Optional JSON config file for non-sensitive settings.
 
-.PARAMETER LEApiVersion
-    Login Enterprise API version to use. Default: v8-preview
+.PARAMETER ImportServerCert
+    Import Login Enterprise appliance certificate into CurrentUser\Root store (for self-signed certs)
 
-.PARAMETER EnvironmentIdPercent
-    Override environment ID for percent metrics (CPU, Memory)
-
-.PARAMETER EnvironmentIdIops
-    Override environment ID for IOPS metrics
-
-.PARAMETER EnvironmentIdMs
-    Override environment ID for latency metrics (ms)
-
-.PARAMETER EnvironmentIdKBps
-    Override environment ID for bandwidth metrics (kBps)
+.PARAMETER KeepCert
+    Keep imported certificate after script completes (default: remove on exit)
 
 .EXAMPLE
     .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
 
 .EXAMPLE
-    .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -NutanixHost "10.0.0.1" -LEApplianceUrl "https://le.example.com" -EnvironmentIdPercent "your-env-id" -RunOnce
+    .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ImportServerCert -RunOnce
 
 .NOTES
-    Version: 1.4.0 | Author: Login VSI | January 2026
+    Version: 1.5.0 | Author: Login VSI | January 2026
     PowerShell 5.1+ compatible, no admin required
 #>
 
@@ -67,7 +58,9 @@ param(
     [Parameter(Mandatory = $false)][switch]$RunOnce,
     [Parameter(Mandatory = $false)][int]$Iterations = 0,
     [Parameter(Mandatory = $false)][int]$MaxRetries = 3,
-    [Parameter(Mandatory = $false)][switch]$SkipTimeSync
+    [Parameter(Mandatory = $false)][switch]$SkipTimeSync,
+    [Parameter(Mandatory = $false)][switch]$ImportServerCert,
+    [Parameter(Mandatory = $false)][switch]$KeepCert
 )
 
 $script:Config = @{
@@ -89,9 +82,7 @@ $script:Config = @{
     SaveRawResponse = $false
     SkipTimeSync    = $false
 }
-# WARNING: These are Joshua's test values. Before public release, replace with generic placeholders!
 
-# Load config file if provided
 if ($ConfigFile -and (Test-Path $ConfigFile)) {
     try {
         $fc = Get-Content $ConfigFile -Raw | ConvertFrom-Json
@@ -112,7 +103,6 @@ if ($ConfigFile -and (Test-Path $ConfigFile)) {
     } catch { Write-Host "Warning: Failed to load config: $($_.Exception.Message)" -ForegroundColor Yellow }
 }
 
-# Command line overrides
 if ($NutanixHost) { $script:Config.NutanixHost = $NutanixHost }
 if ($NutanixUser) { $script:Config.NutanixUser = $NutanixUser }
 if ($LEApplianceUrl) { $script:Config.LEApplianceUrl = $LEApplianceUrl }
@@ -142,7 +132,7 @@ $script:Metrics = @(
     @{ Enabled=$true; NutanixStat="controller_write_io_bandwidth_kBps"; MetricId="nutanix.cluster.storage.bandwidth.write"; DisplayName="IO Bandwidth (Write)"; Unit="kBps"; Group="Nutanix"; ComponentType="cluster"; Conversion="none" }
 )
 
-$script:Version = "1.4.0"
+$script:Version = "1.5.0"
 $script:StartTime = Get-Date
 $script:Timestamp = $script:StartTime.ToString('yyyyMMdd_HHmmss')
 $script:LogFile = Join-Path $script:Config.LogDir "Nutanix-LE-Metrics_$($script:Timestamp).log"
@@ -152,13 +142,11 @@ $script:ErrorCount = 0
 $script:SuccessCount = 0
 $script:FailedIterations = @()
 $script:VerboseLogging = ($VerbosePreference -eq 'Continue')
+$script:ImportedCertThumbs = @()
 
 function Write-Log { param([string]$Message, [ValidateSet("INFO","WARN","ERROR","DEBUG","SUCCESS","VERBOSE")][string]$Level="INFO")
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"; $e = "[$ts] [$Level] $Message"
-    
-    # Skip VERBOSE messages unless -Verbose is enabled
     if ($Level -eq "VERBOSE" -and -not $script:VerboseLogging) { return }
-    
     switch ($Level) { 
         "ERROR" { Write-Host $e -ForegroundColor Red; $script:ErrorCount++ } 
         "WARN" { Write-Host $e -ForegroundColor Yellow } 
@@ -178,66 +166,146 @@ function Write-ErrorDetails { param([System.Management.Automation.ErrorRecord]$E
     if ($ErrorRecord.InvocationInfo) { Write-Log "  Line: $($ErrorRecord.InvocationInfo.ScriptLineNumber)" -Level ERROR }
 }
 
-function Test-EnvironmentId { param([string]$EnvId, [string]$Unit)
-    if ($EnvId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
-        Write-Log "Invalid UUID format for $Unit environment: $EnvId" -Level WARN
-        return $false
+function Get-RemoteCertificates {
+    param([Parameter(Mandatory=$true)][string]$ServerHost, [int]$ServerPort = 443)
+    $certList = New-Object System.Collections.ArrayList
+    function Add-ChainFromLeaf([System.Security.Cryptography.X509Certificates.X509Certificate2]$leaf) {
+        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        $null = $chain.Build($leaf)
+        foreach ($elem in $chain.ChainElements) {
+            $certObj = if ($elem.Certificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) { $elem.Certificate } else { New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($elem.Certificate) }
+            [void]$certList.Add($certObj)
+        }
     }
-    return $true
+    try {
+        $client = $null; $ssl = $null
+        $client = New-Object System.Net.Sockets.TcpClient
+        $client.Connect($ServerHost, $ServerPort)
+        $stream = $client.GetStream()
+        $ssl = New-Object System.Net.Security.SslStream($stream, $false, ({ $true }))
+        $ssl.AuthenticateAsClient($ServerHost)
+        $remote = $ssl.RemoteCertificate
+        if ($remote) {
+            $leaf = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($remote)
+            Add-ChainFromLeaf -leaf $leaf
+            try { $ssl.Close() } catch {}
+            try { $client.Close() } catch {}
+            return ,($certList.ToArray())
+        } else { throw "SslStream returned no remote certificate." }
+    } catch {
+        try { if ($ssl) { $ssl.Dispose() } } catch {}
+        try { if ($client) { $client.Close() } } catch {}
+    }
+    try {
+        $oldCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s,$c,$ch,$e) return $true }
+        try {
+            $uri = "https://$ServerHost/"
+            $req = [System.Net.HttpWebRequest]::Create($uri)
+            $req.Method = 'HEAD'
+            $req.Timeout = 15000
+            try {
+                $resp = $req.GetResponse()
+                try { $resp.Close() } catch {}
+            } catch [System.Net.WebException] {
+                if ($_.Exception.Response) { try { $_.Exception.Response.Close() } catch {} }
+            }
+            $svcCert = $req.ServicePoint.Certificate
+            if ($svcCert) {
+                $leaf2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($svcCert)
+                Add-ChainFromLeaf -leaf $leaf2
+            } else { throw "No certificate available from ServicePoint for $ServerHost" }
+        } finally {
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $oldCallback
+        }
+    } catch { throw $_ }
+    return ,($certList.ToArray())
 }
 
-function Test-UrlFormat { param([string]$Url, [string]$Name)
+function Import-ServerCertificates {
+    param([Parameter(Mandatory=$true)][string]$ServerHost, [int]$ServerPort = 443)
+    Write-Log "Fetching certificate from ${ServerHost}:${ServerPort}..." -Level VERBOSE
+    $importedThumbs = @()
+    try { $certs = Get-RemoteCertificates -ServerHost $ServerHost -ServerPort $ServerPort }
+    catch {
+        Write-Log "Failed to obtain certificate: $($_.Exception.Message)" -Level ERROR
+        return ,@()
+    }
+    if (-not $certs -or $certs.Length -eq 0) {
+        Write-Log "No certificates found" -Level ERROR
+        return ,@()
+    }
+    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","CurrentUser")
     try {
-        $uri = [System.Uri]$Url
-        if ($uri.Scheme -notin @('http', 'https')) { throw "Invalid scheme" }
-        Write-Log "  ✓ $Name URL format valid" -Level VERBOSE
-        return $true
-    } catch {
-        Write-Log "Invalid URL format for ${Name}: $Url" -Level ERROR
-        return $false
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        foreach ($c in $certs) {
+            $x2 = if ($c -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) { $c } else { New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($c) }
+            $thumb = $x2.Thumbprint
+            $exists = $false
+            foreach ($ec in $store.Certificates) { if ($ec.Thumbprint -eq $thumb) { $exists = $true; break } }
+            if (-not $exists) {
+                $store.Add($x2)
+                $importedThumbs += $thumb
+                Write-Log "Imported cert $thumb" -Level SUCCESS
+            } else {
+                Write-Log "Cert $thumb already present" -Level VERBOSE
+            }
+        }
+    } catch { Write-Log "Import error: $($_.Exception.Message)" -Level ERROR }
+    finally { try { $store.Close() } catch {} }
+    return ,$importedThumbs
+}
+
+function Remove-ImportedCertificates {
+    param([string[]]$Thumbprints)
+    if (-not $Thumbprints -or $Thumbprints.Length -eq 0) { return }
+    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","CurrentUser")
+    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+    try {
+        foreach ($thumb in $Thumbprints) {
+            $match = $store.Certificates | Where-Object { $_.Thumbprint -eq $thumb }
+            if ($match) {
+                $store.Remove($match)
+                Write-Log "Removed cert $thumb" -Level SUCCESS
+            }
+        }
+    } finally { $store.Close() }
+}
+
+function Initialize-TlsSettings {
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        Write-Log "Set TLS 1.2" -Level VERBOSE
     }
 }
 
 function Test-Connectivity { param([hashtable]$Headers)
     Write-Log "Validating configuration..." -Level INFO
-    
-    # Test Nutanix URL format
-    if (-not (Test-UrlFormat -Url "https://$($script:Config.NutanixHost):9440" -Name "Nutanix")) { return $false }
-    
-    # Test LE URL format  
-    if (-not (Test-UrlFormat -Url $script:Config.LEApplianceUrl -Name "Login Enterprise")) { return $false }
-    
-    # Test environment IDs
-    $validEnvs = 0
-    foreach ($unit in $script:Config.EnvironmentIds.Keys) {
-        if (Test-EnvironmentId -EnvId $script:Config.EnvironmentIds[$unit] -Unit $unit) { $validEnvs++ }
+    try {
+        $uri = [System.Uri]"https://$($script:Config.NutanixHost):9440"
+        if ($uri.Scheme -notin @('http', 'https')) { throw "Invalid Nutanix URL" }
+        Write-Log "  ✓ Nutanix URL valid" -Level VERBOSE
+    } catch {
+        Write-Log "Invalid Nutanix URL" -Level ERROR
+        return $false
     }
-    Write-Log "  ✓ $validEnvs of $($script:Config.EnvironmentIds.Count) environment IDs valid" -Level VERBOSE
-    
-    # Test Nutanix connectivity
+    try {
+        $uri = [System.Uri]$script:Config.LEApplianceUrl
+        if ($uri.Scheme -notin @('http', 'https')) { throw "Invalid LE URL" }
+        Write-Log "  ✓ LE URL valid" -Level VERBOSE
+    } catch {
+        Write-Log "Invalid LE URL" -Level ERROR
+        return $false
+    }
     Write-Log "Testing Nutanix connectivity..." -Level INFO
     $testData = Get-NutanixClusterStats -Headers $Headers
     if (-not $testData) { 
-        Write-Log "Failed to connect to Nutanix at $($script:Config.NutanixHost)" -Level ERROR
-        Write-Log "Check: Network connectivity, credentials, firewall (port 9440)" -Level ERROR
+        Write-Log "Failed to connect to Nutanix" -Level ERROR
         return $false 
     }
     Write-Log "  ✓ Connected to cluster: $($testData.ClusterName)" -Level SUCCESS
-    
     return $true
-}
-
-function Initialize-CertificateBypass {
-    if ($PSVersionTable.PSVersion.Major -lt 7) {
-        if (-not ([System.Management.Automation.PSTypeName]'TrustAllCertsPolicy').Type) {
-            Add-Type @"
-using System.Net;using System.Security.Cryptography.X509Certificates;
-public class TrustAllCertsPolicy : ICertificatePolicy { public bool CheckValidationResult(ServicePoint srvPoint, X509Certificate certificate, WebRequest request, int certificateProblem) { return true; } }
-"@
-        }
-        [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-    }
 }
 
 function Get-ServerTimeAdjustment { param([string]$BaseUrl, [string]$Token)
@@ -262,7 +330,7 @@ function Get-AdjustedTimestamp { return ([DateTimeOffset]::UtcNow.Add($script:Ti
 function Get-NutanixClusterStats { param([hashtable]$Headers)
     try {
         $uri = "https://$($script:Config.NutanixHost):9440/PrismGateway/services/rest/v2.0/cluster/"
-        Write-Log "  Fetching from: $uri" -Level VERBOSE
+        Write-Log "  Fetching from Nutanix..." -Level VERBOSE
         $fetchStart = Get-Date
         $params = @{ Uri = $uri; Method = "GET"; Headers = $Headers; ContentType = "application/json"; TimeoutSec = 30 }
         if ($PSVersionTable.PSVersion.Major -ge 7) { $params.SkipCertificateCheck = $true }
@@ -270,10 +338,10 @@ function Get-NutanixClusterStats { param([hashtable]$Headers)
         $fetchTime = ((Get-Date) - $fetchStart).TotalSeconds
         Write-Log "  Fetch completed in ${fetchTime}s" -Level VERBOSE
         if ($response -and $response.stats) { return @{ ClusterName = $response.name; ClusterUuid = $response.uuid; Stats = $response.stats; RawResponse = $response } }
-        Write-Log "No stats in Nutanix response" -Level WARN
+        Write-Log "No stats in response" -Level WARN
         return $null
     } catch {
-        Write-Log "Failed to get cluster stats from Nutanix" -Level ERROR
+        Write-Log "Failed to get cluster stats" -Level ERROR
         Write-ErrorDetails -ErrorRecord $_
         return $null
     }
@@ -282,7 +350,12 @@ function Get-NutanixClusterStats { param([hashtable]$Headers)
 function Convert-MetricValue { param([object]$RawValue, [string]$ConversionType)
     if ($null -eq $RawValue -or $RawValue -eq "" -or $RawValue -eq "-1") { return $null }
     $value = [double]$RawValue
-    switch ($ConversionType) { "ppm_to_percent" { return [math]::Round($value / 10000, 2) } "usecs_to_ms" { return [math]::Round($value / 1000, 2) } "none" { return [math]::Round($value, 2) } default { return $value } }
+    switch ($ConversionType) { 
+        "ppm_to_percent" { return [math]::Round($value / 10000, 2) } 
+        "usecs_to_ms" { return [math]::Round($value / 1000, 2) } 
+        "none" { return [math]::Round($value, 2) } 
+        default { return $value } 
+    }
 }
 
 function Convert-ToLEMetrics { param([hashtable]$ClusterData)
@@ -317,21 +390,18 @@ function Send-ToLEPlatformMetrics { param([array]$Metrics, [string]$Unit)
             if ($PSVersionTable.PSVersion.Major -ge 7) { $params.SkipCertificateCheck = $true }
             $response = Invoke-RestMethod @params
             $uploadTime = ((Get-Date) - $uploadStart).TotalSeconds
-            Write-Log "[$Unit] Upload successful: $($response.successfullyAddedCount) metrics in ${uploadTime}s (attempt $attempt)" -Level SUCCESS
+            Write-Log "[$Unit] Upload successful: $($response.successfullyAddedCount) metrics in ${uploadTime}s" -Level SUCCESS
             $success = $true
         } catch {
             $statusCode = $_.Exception.Response.StatusCode.value__
             $delay = $script:Config.RetryBaseDelaySec * [Math]::Pow(2, $attempt - 1)
-            
-            # Check for rate limiting (429)
             if ($statusCode -eq 429) {
                 $retryAfter = $_.Exception.Response.Headers["Retry-After"]
                 if ($retryAfter) { $delay = [int]$retryAfter }
-                Write-Log "[$Unit] Rate limited (429). Waiting ${delay}s before retry..." -Level WARN
+                Write-Log "[$Unit] Rate limited. Waiting ${delay}s..." -Level WARN
             }
-            
             if ($attempt -lt $script:Config.MaxRetries) { 
-                Write-Log "[$Unit] Upload failed (attempt $attempt/$($script:Config.MaxRetries)): $($_.Exception.Message). Retrying in ${delay}s..." -Level WARN
+                Write-Log "[$Unit] Upload failed (attempt $attempt/$($script:Config.MaxRetries)). Retrying..." -Level WARN
                 Start-Sleep -Seconds $delay 
             } else { 
                 Write-Log "[$Unit] Upload failed after $($script:Config.MaxRetries) attempts" -Level ERROR
@@ -345,19 +415,29 @@ function Send-ToLEPlatformMetrics { param([array]$Metrics, [string]$Unit)
 # MAIN
 $ErrorActionPreference = "Stop"
 $script:ExitCode = 0
-
-# Ctrl+C handler
 $script:Interrupted = $false
 [Console]::TreatControlCAsInput = $false
-$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
-    $script:Interrupted = $true
-}
+$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { $script:Interrupted = $true }
 
 try {
-    # Start transcript
     try { Start-Transcript -Path $script:TranscriptFile -Append | Out-Null } catch { Write-Log "Failed to start transcript: $($_.Exception.Message)" -Level WARN }
     
-    Initialize-CertificateBypass
+    Initialize-TlsSettings
+    
+    if ($ImportServerCert) {
+        try {
+            $leUri = [uri]$script:Config.LEApplianceUrl
+            $lePort = if ($leUri.Port -ne -1 -and $leUri.Port -ne 0) { $leUri.Port } else { 443 }
+            Write-Log "Importing Login Enterprise certificate..." -Level INFO
+            $script:ImportedCertThumbs = Import-ServerCertificates -ServerHost $leUri.Host -ServerPort $lePort
+            if ($script:ImportedCertThumbs.Length -gt 0) {
+                Write-Log "Imported $($script:ImportedCertThumbs.Length) certificate(s)" -Level SUCCESS
+            }
+        } catch {
+            Write-Log "Certificate import failed: $($_.Exception.Message)" -Level WARN
+            Write-Log "Continuing without cert import..." -Level WARN
+        }
+    }
     
     Write-Host "`n========================================================================" -ForegroundColor Cyan
     Write-Host "  Nutanix to Login Enterprise Platform Metrics Collector v$($script:Version)" -ForegroundColor Cyan
@@ -368,23 +448,18 @@ try {
     Write-Log "  LE Appliance:   $($script:Config.LEApplianceUrl)"
     Write-Log "  Environments:"; foreach ($u in $script:Config.EnvironmentIds.Keys) { Write-Log "    $u -> $($script:Config.EnvironmentIds[$u])" }
     Write-Log "  Polling:        $($script:Config.PollingIntervalSec)s"
-    Write-Log "  Dry Run:        $DryRun"
-    Write-Log "  Run Once:       $RunOnce"
-    Write-Log "  Verbose:        $($script:VerboseLogging)"
+    if ($ImportServerCert) { Write-Log "  Cert Import:    Enabled (KeepCert: $KeepCert)" }
     Write-Host ""
     
-    # Build auth headers
     $nutanixAuth = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($script:Config.NutanixUser):$($script:Config.NutanixPassword)"))
     $nutanixHeaders = @{ "Authorization" = "Basic $nutanixAuth"; "Accept" = "application/json" }
     
-    # Validate configuration and connectivity
     if (-not (Test-Connectivity -Headers $nutanixHeaders)) {
         Write-Log "Pre-flight checks failed. Exiting." -Level ERROR
         $script:ExitCode = 1
         throw "Configuration validation failed"
     }
     
-    # Time synchronization
     if (-not $SkipTimeSync -and -not $script:Config.SkipTimeSync) {
         Write-Log "Synchronizing time..."
         $script:TimeAdjustment = Get-ServerTimeAdjustment -BaseUrl $script:Config.LEApplianceUrl -Token $script:Config.LEApiToken
@@ -392,16 +467,14 @@ try {
             Write-Log "  ✓ Time adjustment: $([math]::Round($script:TimeAdjustment.TotalMilliseconds))ms" -Level VERBOSE
         }
     } else {
-        Write-Log "Time sync skipped (disabled in config or command line)"
+        Write-Log "Time sync skipped"
     }
     Write-Host ""
     
-    # Main collection loop
     $iteration = 0; $totalMetricsSent = 0
     while ($true) {
-        # Check for Ctrl+C
         if ($script:Interrupted) {
-            Write-Log "Interrupt detected - finishing current operation..." -Level WARN
+            Write-Log "Interrupt detected - finishing..." -Level WARN
             break
         }
         
@@ -412,20 +485,17 @@ try {
         try {
             $clusterData = Get-NutanixClusterStats -Headers $nutanixHeaders
             if ($clusterData) {
-                # Save raw response if requested
                 if ($script:Config.SaveRawResponse -or $SaveRawResponse) { 
                     $rawFile = Join-Path $script:Config.LogDir "NutanixResponse_$($script:Timestamp)_$($iteration.ToString('D4')).json"
                     $clusterData.RawResponse | ConvertTo-Json -Depth 10 | Out-File $rawFile -Encoding UTF8
-                    Write-Log "  Saved raw response to: $rawFile" -Level VERBOSE
+                    Write-Log "  Saved raw response" -Level VERBOSE
                 }
                 
-                # Convert metrics
                 $metricsByUnit = Convert-ToLEMetrics -ClusterData $clusterData
                 $iterationTotal = 0
                 foreach ($u in $metricsByUnit.Keys) { $iterationTotal += $metricsByUnit[$u].Metrics.Count }
                 Write-Log "Collected $iterationTotal metrics across $($metricsByUnit.Keys.Count) units"
                 
-                # Upload or dry-run
                 if ($DryRun) { 
                     Write-Log "DRY RUN - Would upload:" -Level WARN
                     foreach ($u in $metricsByUnit.Keys) { Write-Log "  [$u] $($metricsByUnit[$u].Metrics.Count) metrics" -Level WARN }
@@ -453,12 +523,10 @@ try {
             $script:FailedIterations += $iteration
         }
         
-        # Check exit conditions
         if ($RunOnce) { Write-Log "Run-once mode - exiting"; break }
         if ($Iterations -gt 0 -and $iteration -ge $Iterations) { Write-Log "Completed $Iterations iterations - exiting"; break }
         
-        # Sleep with interrupt check
-        Write-Log "Next poll in $($script:Config.PollingIntervalSec)s... (Ctrl+C to stop)"
+        Write-Log "Next poll in $($script:Config.PollingIntervalSec)s..."
         $sleepEnd = (Get-Date).AddSeconds($script:Config.PollingIntervalSec)
         while ((Get-Date) -lt $sleepEnd) {
             if ($script:Interrupted) { break }
@@ -468,11 +536,10 @@ try {
     }
     
 } catch {
-    Write-Log "FATAL ERROR - Script terminated unexpectedly" -Level ERROR
+    Write-Log "FATAL ERROR - Script terminated" -Level ERROR
     Write-ErrorDetails -ErrorRecord $_
     $script:ExitCode = 1
 } finally {
-    # Always execute cleanup
     $runtime = (Get-Date) - $script:StartTime
     
     Write-Host "`n========================================================================" -ForegroundColor Cyan
@@ -487,15 +554,19 @@ try {
     if ($script:Interrupted) { Write-Log "  Status:            Interrupted by user" -Level WARN }
     Write-Host "========================================================================" -ForegroundColor Cyan
     
-    # Stop transcript
+    if ($ImportServerCert -and -not $KeepCert -and $script:ImportedCertThumbs.Length -gt 0) {
+        try {
+            Write-Log "Removing imported certificates..." -Level INFO
+            Remove-ImportedCertificates -Thumbprints $script:ImportedCertThumbs
+        } catch {
+            Write-Log "Failed to remove certs: $($_.Exception.Message)" -Level WARN
+        }
+    }
+    
     try { Stop-Transcript | Out-Null } catch {}
     
-    # Capture any remaining PowerShell errors
     if ($Error.Count -gt 0) {
         Write-Log "PowerShell error buffer contains $($Error.Count) error(s)" -Level WARN
-        foreach ($err in $Error | Select-Object -First 5) {
-            Write-Log "  - $($err.Exception.Message)" -Level WARN
-        }
     }
 }
 
