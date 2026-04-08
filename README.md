@@ -1,438 +1,704 @@
 # Nutanix to Login Enterprise Platform Metrics Integration
 
-Collects performance metrics from Nutanix clusters and uploads them to Login Enterprise Platform Metrics for visualization and analysis.
+Collect Nutanix infrastructure metrics — at the cluster, host, and VM level — and surface them alongside Login Enterprise test data in the Platform Metrics UI. Built for EUC performance engineers who want full-stack visibility during load tests, continuous tests, and migration bake-offs without switching between tools.
 
-## Overview
-
-This integration polls Nutanix Prism Element API for cluster-level performance statistics and sends them to Login Enterprise's Platform Metrics feature. Metrics are organized by unit type (percent, iops, ms, kBps) into separate environments for proper Y-axis scaling in the UI.
-
-## Metrics Collected (Cluster Level)
-
-| Category | Metrics | Unit |
-|----------|---------|------|
-| **CPU** | Cluster CPU Usage | percent |
-| **Memory** | Cluster Memory Usage | percent |
-| **Storage IOPS** | Total, Read, Write | iops |
-| **Storage Latency** | Average, Read, Write | ms |
-| **IO Bandwidth** | Total, Read, Write | kBps |
-
-## Requirements
-
-- **PowerShell**: 5.1 or 7.x (no admin privileges required)
-- **Nutanix**: Prism Element with API access (v2 API)
-- **Login Enterprise**: Appliance with Platform Metrics enabled (preview feature)
-- **Network**: Connectivity to both Nutanix (port 9440) and Login Enterprise (port 443)
-
-## How It Works
-
-```
-[Data Flow]
-Nutanix Prism Element --> PowerShell Collector --> Login Enterprise API --> Platform Metrics UI
-      (Port 9440)           (Converts metrics)      (v8-preview endpoint)    (4 Environments)
-                                                                               
-Metrics by Unit:
-- percent: CPU Usage, Memory Usage
-- iops: Storage IOPS (Total, Read, Write)  
-- ms: Storage Latency (Avg, Read, Write)
-- kBps: IO Bandwidth (Total, Read, Write)
-```
-
-### Why 4 Environments?
-
-Login Enterprise Platform Metrics displays one Y-axis unit at a time. To visualize all metrics simultaneously, we split them by unit type into separate environments, each linked to its own continuous test.
-
-**Future versions may support multi-unit visualization in a single environment.**
-
-## Prerequisites
-
-### Login Enterprise Setup
-
-Before using these scripts, configure Login Enterprise Platform Metrics:
-
-1. **Enable Platform Metrics Feature** (LE 6.4.3+)
-   - Open browser DevTools console (F12)
-   - Run: `leSetFeatureFlag('platformMetrics', 1)`
-   - Refresh page
-   - **Note:** This feature flag requirement may change in future LE versions. Check release notes if using LE 6.5+
-
-2. **Create Environments** (one per unit type)
-   - [Configure Environments Guide](https://docs.loginvsi.com/login-enterprise/6.4/configuring-environments-optional)
-   - Create 4 environments: percent, iops, ms, kBps
-   - Copy each environment ID from browser URL when viewing the environment
-
-3. **Create Continuous Tests** (one per environment)
-   - [Configure Continuous Testing Guide](https://docs.loginvsi.com/login-enterprise/6.4/configuring-continuous-testing)
-   - Link each continuous test to its corresponding environment
-   - [View Results Guide](https://docs.loginvsi.com/login-enterprise/6.4/viewing-continuous-testing-results)
-
-**Alternative:** You can also use Load Tests instead of Continuous Tests
-   - [Configure Load Testing Guide](https://docs.loginvsi.com/login-enterprise/6.4/configuring-load-testing)
-   - [View Load Test Results Guide](https://docs.loginvsi.com/login-enterprise/6.4/viewing-load-testing-results)
-
-## Quick Start
-
-### 1. Enable Platform Metrics in Login Enterprise
-
-**Note:** As of Login Enterprise 6.4.3 (current production release), Platform Metrics is a preview feature that requires manual enablement. If you're using a newer version of Login Enterprise, check the release notes as this feature flag may no longer be required.
-
-In your browser's DevTools console (F12):
-```javascript
-leSetFeatureFlag('platformMetrics', 1)
-```
-Refresh the page after running this command.
-
-### 2. Create Environments
-
-Create 4 environments in Login Enterprise (Configuration → Environments):
-- One for `percent` metrics (CPU, Memory)
-- One for `iops` metrics (Storage IOPS)
-- One for `ms` metrics (Storage Latency)
-- One for `kBps` metrics (IO Bandwidth)
-
-Note the UUID of each environment.
-
-### 3. Create API Token
-
-In Login Enterprise:
-1. Go to Configuration → System Access Tokens
-2. Create a new token with **Configuration** access level
-3. Copy the token (you won't see it again)
-
-### 4. Configure and Run
-
-#### Option A: Using Config File
-
-1. Edit `nutanix-config.json` with your environment IDs:
-```json
-{
-    "NutanixHost": "your-nutanix-prism.example.com",
-    "NutanixUser": "admin",
-    "LEApplianceUrl": "https://your-le-appliance.example.com",
-    "EnvironmentIds": {
-        "percent": "your-percent-env-uuid",
-        "iops": "your-iops-env-uuid",
-        "ms": "your-ms-env-uuid",
-        "kBps": "your-kbps-env-uuid"
-    },
-    "PollingIntervalSec": 30,
-    "MaxRetries": 3,
-    "SkipTimeSync": false
-}
-```
-
-2. Run the collector:
-```powershell
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "YourPass" -LEApiToken "YourToken" -ConfigFile ".\nutanix-config.json"
-```
-
-#### Option B: Command Line Only
-
-```powershell
-.\Nutanix-LE-PlatformMetrics.ps1 `
-    -NutanixPassword "YourPass" `
-    -LEApiToken "YourToken" `
-    -NutanixHost "your-nutanix-prism.example.com" `
-    -LEApplianceUrl "https://your-le-appliance.example.com"
-```
-
-#### Option C: With Self-Signed Certificate (Recommended for Enterprise)
-
-```powershell
-.\Nutanix-LE-PlatformMetrics.ps1 `
-    -NutanixPassword "YourPass" `
-    -LEApiToken "YourToken" `
-    -NutanixHost "your-nutanix-prism.example.com" `
-    -LEApplianceUrl "https://your-le-appliance.example.com" `
-    -ImportServerCert `
-    -RunOnce
-```
-
-### 5. View Results
-
-1. Open Login Enterprise web UI
-2. Navigate to your continuous test linked to one of the environments
-3. Click on Platform Metrics tab
-4. View the graphs (open multiple tabs for different unit types)
-
-## Certificate Handling (New in v1.5.0)
-
-### Why Certificate Handling Matters
-
-Login Enterprise appliances often use self-signed certificates in enterprise environments. The scripts provide flexible certificate handling options to support different security requirements.
-
-### Certificate Options
-
-**Default Behavior** (No cert handling):
-- Works for appliances with valid, trusted certificates
-- May fail with self-signed certificates
-
-**With `-ImportServerCert`:**
-- Imports Login Enterprise appliance certificate into CurrentUser\Root trust store
-- Proper way to handle self-signed certificates
-- Certificate is automatically removed after script completes (unless `-KeepCert` specified)
-
-**With `-ImportServerCert -KeepCert`:**
-- Imports certificate and keeps it permanently
-- Useful for repeated runs without re-importing
-
-### Certificate Examples
-
-```powershell
-# Self-signed cert (temporary import)
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ImportServerCert -RunOnce
-
-# Self-signed cert (keep permanently)
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ImportServerCert -KeepCert -RunOnce
-
-# Trusted cert (no import needed)
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
-```
-
-## Usage Examples
-
-```powershell
-# Run once (for testing)
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
-
-# Override all values from command line (no JSON config needed)
-.\Nutanix-LE-PlatformMetrics.ps1 `
-    -NutanixPassword "pass" `
-    -LEApiToken "token" `
-    -NutanixHost "10.0.0.1" `
-    -LEApplianceUrl "https://le.example.com" `
-    -EnvironmentIdPercent "env-id-1" `
-    -EnvironmentIdIops "env-id-2" `
-    -EnvironmentIdMs "env-id-3" `
-    -EnvironmentIdKBps "env-id-4" `
-    -RunOnce
-
-# Dry run (fetch but don't upload)
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -DryRun -RunOnce
-
-# Run 10 iterations then stop
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -Iterations 10
-
-# Custom polling interval (60 seconds)
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -PollingIntervalSec 60
-
-# Continuous polling (Ctrl+C to stop)
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token"
-
-# With verbose logging
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -Verbose -RunOnce
-```
-
-## Retrieving Metrics
-
-Use the retrieval script to export Platform Metrics data:
-
-```powershell
-# Get last hour from all 4 environments (with cert handling)
-.\Get-LEPlatformMetrics.ps1 `
-    -LEApiToken "token" `
-    -BaseUrl "https://le.example.com" `
-    -EnvironmentIdPercent "env-id-1" `
-    -EnvironmentIdIops "env-id-2" `
-    -EnvironmentIdMs "env-id-3" `
-    -EnvironmentIdKBps "env-id-4" `
-    -ImportServerCert `
-    -LastHours 1
-
-# Get last 24 hours (uses generic placeholder IDs if not specified)
-.\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -LastHours 24
-
-# Query single environment only
-.\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -EnvironmentId "specific-env-id" -LastHours 1
-
-# Filter by metric group
-.\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -LastHours 24 -MetricGroups @("Nutanix")
-```
-
-Outputs:
-- `PlatformMetrics_YYYYMMDD_HHMMSS.json` - Raw API response
-- `PlatformMetrics_YYYYMMDD_HHMMSS.csv` - Flattened data for analysis
-
-## Configuration System
-
-### How Configuration Works
-
-The script uses a **3-tier priority system** for configuration:
-
-```
-1. Built-in Defaults (in script)
-   ↓ overridden by
-2. JSON Config File (if provided)
-   ↓ overridden by
-3. Command Line Parameters (highest priority)
-```
-
-**Examples:**
-
-```powershell
-# Uses all defaults from script
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
-
-# Uses JSON config, overrides defaults
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ConfigFile "config.json" -RunOnce
-
-# Uses JSON config BUT command line overrides the host
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ConfigFile "config.json" -NutanixHost "other-nutanix.example.com" -RunOnce
-```
-
-### Why This Design?
-
-- **Flexibility**: Run without any config files for quick tests
-- **Convenience**: Use JSON for repeated runs with same settings
-- **Security**: Sensitive data (passwords, tokens) always from command line only
-- **Override Power**: Change one setting without editing JSON
+This integration was originally developed in partnership with Nutanix and validated with Truist Bank. It is currently a **customer preview**.
 
 ---
 
-## Configuration Options
+## What This Does
 
-### JSON Config File (`nutanix-config.json`)
+During a Login Enterprise test, you care about what the underlying infrastructure is doing. Is the host CPU saturated? Are VMs getting disk latency? Is the cluster I/O bandwidth maxed out? The Nutanix integration pulls real-time metrics from Prism Element and Prism Central and sends them to Login Enterprise Platform Metrics, where they appear on the same timeline as your EUC test results.
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `NutanixHost` | string | (example.com) | Nutanix Prism Element IP or hostname |
-| `NutanixUser` | string | admin | Nutanix admin username |
-| `LEApplianceUrl` | string | (example.com) | Login Enterprise appliance URL |
-| `LEApiVersion` | string | v8-preview | Login Enterprise API version |
-| `EnvironmentIds.percent` | string | (see setup) | LE environment UUID for percent metrics |
-| `EnvironmentIds.iops` | string | (see setup) | LE environment UUID for IOPS metrics |
-| `EnvironmentIds.ms` | string | (see setup) | LE environment UUID for latency metrics |
-| `EnvironmentIds.kBps` | string | (see setup) | LE environment UUID for bandwidth metrics |
-| `PollingIntervalSec` | int | 30 | Seconds between each poll |
-| `MaxRetries` | int | 3 | Max retry attempts on upload failure |
-| `SkipTimeSync` | bool | false | Skip server time synchronization |
+**Use cases:**
 
-### Command Line Parameters (Override JSON)
+- **Continuous Testing** — monitor cluster and host health alongside user experience scores 24/7
+- **Load Testing** — correlate infrastructure saturation with EUC performance degradation as user count scales
+- **Migration / Bake-off** — compare infrastructure behavior between environments (e.g., VMware Horizon vs. AVD on Nutanix AHV)
 
-#### Collector Script
+---
+
+## Metrics Collected
+
+### Cluster-Level (via Prism Element v2 API)
+
+| Metric | Unit |
+|--------|------|
+| Cluster CPU Usage | percent |
+| Cluster Memory Usage | percent |
+| Cluster Storage IOPS (Total, Read, Write) | iops |
+| Cluster Storage Latency (Avg, Read, Write) | ms |
+| Cluster IO Bandwidth (Total, Read, Write) | kBps |
+
+### Host-Level (via Prism Central v4 API)
+
+| Metric | Unit |
+|--------|------|
+| Host CPU Usage | percent |
+| Host Memory Usage | percent |
+| Host Storage IOPS (Total, Read, Write) | iops |
+| Host Storage Latency (Avg, Read, Write) | ms |
+| Host IO Bandwidth (Total, Read, Write) | kBps |
+
+### VM-Level (via Prism Central v4 API)
+
+| Metric | Unit |
+|--------|------|
+| VM CPU Usage | percent |
+| VM CPU Ready Time | percent |
+| VM Memory Usage | percent |
+| VM Disk Latency (Avg) | ms |
+| VM Disk Bandwidth | kBps |
+| VM Network RX | bytesPerSec |
+| VM Network TX | bytesPerSec |
+
+---
+
+## Requirements
+
+### Nutanix
+
+| Component | Minimum Version | Notes |
+|-----------|----------------|-------|
+| AOS (Prism Element) | 6.7 | Cluster-level stats via PE v2 API |
+| Prism Central | 2024.3 | Required for host and VM stats |
+| AHV | 10.x | VM stats tested on AHV only |
+
+> **Tested with:** AOS 6.8.1, Prism Central 2024.3, AHV 10.x
+>
+> **Prism Central 7.5+:** Enables automatic API version negotiation. On older PC versions (any `pc.YYYY.x` format), the script defaults to v4.0 automatically.
+
+Cluster-level metrics work without Prism Central. Host and VM metrics require PC.
+
+### Login Enterprise
+
+- Login Enterprise appliance with Platform Metrics feature enabled
+- API token with **Configuration** access level
+- Network access from the machine running the script to both Nutanix port 9440 and Login Enterprise port 443
+
+### PowerShell
+
+- Windows PowerShell 5.1 (tested and validated)
+- PowerShell 7.x (compatible, not primary target)
+- No admin privileges required
+
+---
+
+## How It Works
+
+### Data Flow
+
+```
+Nutanix Prism Element (port 9440)
+  └── Cluster stats (PE v2 API)
+        └── CPU, Memory, IOPS, Latency, Bandwidth
+
+Nutanix Prism Central (port 9440)
+  ├── Host stats (PC v4 clustermgmt API)
+  │     └── CPU, Memory, IOPS, Latency, Bandwidth per host
+  └── VM stats (PC v4 vmm API)
+        └── CPU, Memory, Disk, Network per powered-on VM
+
+        │
+        ▼
+
+Nutanix-LE-PlatformMetrics.ps1
+  ├── Pre-flight checks (PE + PC connectivity)
+  ├── API version negotiation (PC 7.5+ only)
+  ├── Time sync with LE appliance
+  ├── Collect cluster stats
+  ├── Collect host stats (if -CollectHostStats)
+  ├── Collect VM stats (if -CollectVmStats, optionally filtered by -VmFilter)
+  ├── Build metric payloads (with customTags, componentType, instance)
+  └── Upload to Login Enterprise Platform Metrics API
+
+        │
+        ▼
+
+Login Enterprise Platform Metrics API (port 443)
+  ├── Multi-environment mode: separate env per unit type
+  │     ├── Nutanix-Percent  → CPU %, Memory %
+  │     ├── Nutanix-IOPS     → Storage IOPS
+  │     ├── Nutanix-Latency  → Storage Latency
+  │     ├── Nutanix-Bandwidth → IO Bandwidth
+  │     └── Nutanix-Network  → VM Network RX/TX
+  └── Single-environment mode: all metrics to one env (Power BI)
+
+        │
+        ▼
+
+Login Enterprise Platform Metrics UI
+  └── Metrics appear on test result timeline
+```
+
+### Collector Script Execution Flow
+
+```
+START
+│
+├── Load configuration (defaults → command-line overrides)
+├── Print startup config dump
+│
+├── PRE-FLIGHT
+│   ├── Validate params (host, URLs, env IDs)
+│   ├── Test Prism Central connectivity (if host/VM stats enabled)
+│   └── Test Prism Element connectivity
+│       └── FAIL → exit with error
+│
+├── API VERSION NEGOTIATION
+│   ├── PC version is 7.5+ semantic format?
+│   │   ├── YES → query PC for supported v4 versions → pick highest mutual version
+│   │   └── NO  → PC is calendar-versioned (pre-7.5) → default to v4.0
+│   └── Set negotiated version for all subsequent PC API calls
+│
+├── TIME SYNC
+│   └── Adjust timestamps to match LE appliance clock
+│
+└── POLLING LOOP (each iteration)
+    │
+    ├── CLUSTER STATS (PE v2)
+    │   └── hypervisor_cpu_usage_ppm, memory, iops, latency, bandwidth
+    │
+    ├── HOST STATS (PC v4, if -CollectHostStats and PC reachable)
+    │   └── For each host in cluster:
+    │       └── cpu, memory, iops, latency, bandwidth
+    │
+    ├── VM STATS (PC v4, if -CollectVmStats and PC reachable)
+    │   ├── Get powered-on VM list
+    │   ├── Apply -VmFilter (if set)
+    │   └── For each matching VM (500ms delay between calls):
+    │       └── cpu, cpu_ready, memory, disk_latency, disk_bandwidth, net_rx, net_tx
+    │
+    ├── BUILD PAYLOADS
+    │   ├── Attach customTags (cluster_name, cluster_uuid, host_extid, vm_extid, etc.)
+    │   ├── Single mode: all metrics → one environment ID
+    │   └── Multi mode: route by unit type → correct environment ID
+    │       └── Skip placeholder (00000000) env IDs
+    │
+    ├── UPLOAD TO LE
+    │   ├── POST to /publicApi/v8-preview/platform-metrics
+    │   └── Retry up to 3x with exponential backoff on failure
+    │
+    └── SLEEP (polling interval minus elapsed time)
+        └── If elapsed > interval → start next iteration immediately with WARN
+```
+
+---
+
+## Login Enterprise Setup
+
+Before running the collector, set up Login Enterprise:
+
+### 1. Enable Platform Metrics
+
+Platform Metrics is currently a preview feature. Enable it in your browser's DevTools console (F12):
+
+```javascript
+leSetFeatureFlag('platformMetrics', 1)
+```
+
+Refresh after running.
+
+### 2. Create Environments
+
+Create one environment per unit type in Configuration → Environments:
+
+| Environment Name | Unit Type | Metrics |
+|-----------------|-----------|---------|
+| Nutanix-Percent | percent | CPU %, Memory % |
+| Nutanix-IOPS | iops | Storage IOPS |
+| Nutanix-Latency | ms | Storage Latency |
+| Nutanix-Bandwidth | kBps | IO Bandwidth |
+| Nutanix-Network | bytesPerSec | VM Network RX/TX |
+
+Copy the UUID of each environment from the browser URL bar when viewing the environment.
+
+**Alternatively**, create a single environment (e.g. `Nutanix-All`) and use `-LEEnvironmentId` to send all metrics there. This is the recommended setup for Power BI.
+
+### 3. Create a Continuous Test or Load Test
+
+Link each environment to a continuous test or a load test. The Platform Metrics tab appears on test result pages for both test types.
+
+- **Continuous Testing** — always-on monitoring, metrics collected 24/7 alongside user experience scores
+- **Load Testing** — metrics collected during active load test runs, letting you correlate infrastructure saturation with EUC performance as user count scales
+
+### 4. Create an API Token
+
+Configuration → System Access Tokens → create a token with **Configuration** access level.
+
+---
+
+## Quick Start
+
+### Cluster stats only (no PC required)
+
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 `
+    -NutanixPassword "YourPassword" `
+    -LEApiToken "YourToken" `
+    -NutanixHost "your-nutanix-prism.example.com" `
+    -LEApplianceUrl "https://your-le-appliance.example.com" `
+    -EnvironmentIdPercent "uuid-percent" `
+    -EnvironmentIdIops "uuid-iops" `
+    -EnvironmentIdMs "uuid-ms" `
+    -EnvironmentIdKBps "uuid-kbps" `
+    -RunOnce
+```
+
+### Cluster + host + VM stats (requires Prism Central)
+
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 `
+    -NutanixPassword "YourPassword" `
+    -LEApiToken "YourToken" `
+    -NutanixHost "your-nutanix-prism.example.com" `
+    -PrismCentralHost "your-prism-central.example.com" `
+    -ClusterExtId "your-cluster-ext-id" `
+    -LEApplianceUrl "https://your-le-appliance.example.com" `
+    -EnvironmentIdPercent "uuid-percent" `
+    -EnvironmentIdIops "uuid-iops" `
+    -EnvironmentIdMs "uuid-ms" `
+    -EnvironmentIdKBps "uuid-kbps" `
+    -EnvironmentIdBytesPerSec "uuid-network" `
+    -CollectHostStats `
+    -CollectVmStats `
+    -RunOnce
+```
+
+### Single environment (Power BI mode)
+
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 `
+    -NutanixPassword "YourPassword" `
+    -LEApiToken "YourToken" `
+    -NutanixHost "your-nutanix-prism.example.com" `
+    -PrismCentralHost "your-prism-central.example.com" `
+    -ClusterExtId "your-cluster-ext-id" `
+    -LEApplianceUrl "https://your-le-appliance.example.com" `
+    -LEEnvironmentId "uuid-single-env" `
+    -CollectHostStats `
+    -CollectVmStats `
+    -RunOnce
+```
+
+### Continuous polling (run until Ctrl+C)
+
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 `
+    -NutanixPassword "YourPassword" `
+    -LEApiToken "YourToken" `
+    -NutanixHost "your-nutanix-prism.example.com" `
+    -LEApplianceUrl "https://your-le-appliance.example.com" `
+    -LEEnvironmentId "uuid-single-env" `
+    -CollectHostStats `
+    -CollectVmStats
+```
+
+### Filter to specific VMs
+
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 `
+    -NutanixPassword "YourPassword" `
+    -LEApiToken "YourToken" `
+    -NutanixHost "your-nutanix-prism.example.com" `
+    -PrismCentralHost "your-prism-central.example.com" `
+    -ClusterExtId "your-cluster-ext-id" `
+    -LEApplianceUrl "https://your-le-appliance.example.com" `
+    -LEEnvironmentId "uuid-single-env" `
+    -CollectVmStats `
+    -VmFilter "MyLauncher-01,MyLauncher-02,MyTarget-01" `
+    -RunOnce
+```
+
+### Dry run (verify connectivity without uploading)
+
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 `
+    -NutanixPassword "YourPassword" `
+    -LEApiToken "YourToken" `
+    -NutanixHost "your-nutanix-prism.example.com" `
+    -LEApplianceUrl "https://your-le-appliance.example.com" `
+    -LEEnvironmentId "uuid-single-env" `
+    -CollectHostStats `
+    -CollectVmStats `
+    -DryRun -RunOnce
+```
+
+---
+
+## Collector Script Parameters
+
+### Nutanix connection
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `-NutanixPassword` | **YES** | Nutanix admin password (never stored) |
-| `-LEApiToken` | **YES** | Login Enterprise API token (never stored) |
-| `-ImportServerCert` | No | Import LE appliance certificate (for self-signed certs) |
-| `-KeepCert` | No | Keep imported certificate after script ends |
-| `-ConfigFile` | No | Path to JSON config file |
-| `-NutanixHost` | No | Override Nutanix host |
-| `-LEApplianceUrl` | No | Override LE appliance URL |
-| `-LEApiVersion` | No | LE API version (default: v8-preview) |
-| `-EnvironmentIdPercent` | No | Override environment ID for percent metrics |
-| `-EnvironmentIdIops` | No | Override environment ID for IOPS metrics |
-| `-EnvironmentIdMs` | No | Override environment ID for latency metrics |
-| `-EnvironmentIdKBps` | No | Override environment ID for bandwidth metrics |
-| `-PollingIntervalSec` | No | Override polling interval |
-| `-RunOnce` | No | Run once and exit |
-| `-Iterations` | No | Run N times and exit |
-| `-DryRun` | No | Fetch but don't upload |
-| `-SkipTimeSync` | No | Skip time synchronization |
-| `-SaveRawResponse` | No | Save Nutanix API response to JSON |
-| `-Verbose` | No | Enable detailed logging for debugging |
+| `-NutanixPassword` | **Yes** | Prism Element admin password |
+| `-NutanixHost` | **Yes** | Prism Element IP or hostname (port 9440) |
+| `-NutanixUser` | No | Prism Element username (default: admin) |
+| `-PrismCentralHost` | Conditional | Required for `-CollectHostStats` or `-CollectVmStats` |
+| `-ClusterExtId` | Conditional | Required for host/VM stats. Get from PC API or UI. |
 
-#### Retrieval Script
+### Login Enterprise connection
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `-LEApiToken` | **YES** | Login Enterprise API token |
-| `-ImportServerCert` | No | Import LE appliance certificate |
-| `-KeepCert` | No | Keep imported certificate |
-| `-BaseUrl` | No | Login Enterprise appliance URL |
-| `-EnvironmentIdPercent` | No | Environment ID for percent metrics |
-| `-EnvironmentIdIops` | No | Environment ID for IOPS metrics |
-| `-EnvironmentIdMs` | No | Environment ID for latency metrics |
-| `-EnvironmentIdKBps` | No | Environment ID for bandwidth metrics |
-| `-LastHours` | No | Retrieve last N hours (default: 1) |
-| `-MetricGroups` | No | Filter by metric groups |
+| `-LEApiToken` | **Yes** | LE API token (Configuration access level) |
+| `-LEApplianceUrl` | **Yes** | Full URL of LE appliance |
+| `-LEApiVersion` | No | API version segment (default: v8-preview) |
 
-## Files
+### Environment ID modes (use one)
+
+**Multi-environment mode** — routes metrics to separate LE environments by unit type. Required for proper Y-axis scaling in the LE UI.
+
+| Parameter | Unit | Metrics |
+|-----------|------|---------|
+| `-EnvironmentIdPercent` | percent | CPU, Memory usage |
+| `-EnvironmentIdIops` | iops | Storage IOPS |
+| `-EnvironmentIdMs` | ms | Storage Latency |
+| `-EnvironmentIdKBps` | kBps | IO Bandwidth |
+| `-EnvironmentIdBytesPerSec` | bytesPerSec | VM Network RX/TX |
+
+**Single-environment mode** — sends all metrics to one environment. Recommended for Power BI.
+
+| Parameter | Description |
+|-----------|-------------|
+| `-LEEnvironmentId` | Single environment UUID for all metrics |
+
+### Collection scope
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-CollectHostStats` | off | Enable host-level metrics (requires PC) |
+| `-CollectVmStats` | off | Enable VM-level metrics (requires PC) |
+| `-VmFilter` | (all) | Comma-separated VM names to collect. If omitted, collects all powered-on VMs. |
+
+### Run control
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-RunOnce` | off | Run one iteration and exit |
+| `-Iterations` | 0 (unlimited) | Run N iterations and exit |
+| `-PollingIntervalSec` | 30 | Seconds between polls |
+| `-DryRun` | off | Collect but do not upload |
+| `-SkipTimeSync` | off | Skip LE time sync |
+
+### Output and diagnostics
+
+| Parameter | Description |
+|-----------|-------------|
+| `-LogDir` | Directory for log files (default: script directory) |
+| `-Verbose` | Enable detailed per-metric logging |
+
+### Certificate handling
+
+| Parameter | Description |
+|-----------|-------------|
+| `-ImportServerCert` | Import LE appliance certificate into CurrentUser\Root before connecting |
+| `-KeepCert` | Keep imported cert after script exits (default: remove on exit) |
+
+> **Note on `-ImportServerCert`:** This imports into `CurrentUser\Root` and does not require admin. Some EDR/security tools (CrowdStrike, etc.) may flag this behavior. In environments where that is a concern, manually install the LE appliance certificate in your trust store instead and omit this flag.
+
+---
+
+## Retrieval Script
+
+`Get-LEPlatformMetrics.ps1` queries the Login Enterprise API and exports metrics to CSV and JSON. Use it to verify data, pull results for analysis, or feed Power BI.
+
+### Examples
+
+```powershell
+# Last 1 hour, single environment
+.\Get-LEPlatformMetrics.ps1 `
+    -LEApiToken "YourToken" `
+    -BaseUrl "https://your-le-appliance.example.com" `
+    -EnvironmentId "uuid-single-env" `
+    -LastHours 1
+
+# Last 1 hour, all 5 environments
+.\Get-LEPlatformMetrics.ps1 `
+    -LEApiToken "YourToken" `
+    -BaseUrl "https://your-le-appliance.example.com" `
+    -EnvironmentIdPercent "uuid-percent" `
+    -EnvironmentIdIops "uuid-iops" `
+    -EnvironmentIdMs "uuid-ms" `
+    -EnvironmentIdKBps "uuid-kbps" `
+    -EnvironmentIdBytesPerSec "uuid-network" `
+    -LastHours 1
+
+# Array mode (pass any number of env IDs)
+.\Get-LEPlatformMetrics.ps1 `
+    -LEApiToken "YourToken" `
+    -BaseUrl "https://your-le-appliance.example.com" `
+    -EnvironmentIds @("uuid-1","uuid-2") `
+    -LastHours 2
+
+# Specific time range
+.\Get-LEPlatformMetrics.ps1 `
+    -LEApiToken "YourToken" `
+    -BaseUrl "https://your-le-appliance.example.com" `
+    -EnvironmentId "uuid-single-env" `
+    -StartTime "2026-04-08T10:00:00.000Z" `
+    -EndTime "2026-04-08T11:00:00.000Z"
+```
+
+### Output files
 
 | File | Description |
 |------|-------------|
-| `Nutanix-LE-PlatformMetrics.ps1` | Main collector script (v1.5.0) |
-| `Get-LEPlatformMetrics.ps1` | Metrics retrieval/export script (v1.3.0) |
-| `nutanix-config.json` | Configuration file (non-sensitive settings) |
-| `README.md` | This file |
+| `Get-LEPlatformMetrics_YYYYMMDD_HHMMSS.csv` | Flat data — one row per data point, all fields |
+| `Get-LEPlatformMetrics_YYYYMMDD_HHMMSS.json` | Raw API response |
+| `Get-LEPlatformMetrics_Log_YYYYMMDD_HHMMSS.txt` | Run log |
 
-## Security Notes
+CSV columns: `timestamp, value, metricId, environmentKey, displayName, unit, instance, componentType, group, customTags`
 
-- **Passwords and API tokens are NEVER stored in config files or scripts**
-- Sensitive credentials must be passed via command line parameters
-- Certificate import uses CurrentUser\Root store (no admin required)
-- Imported certificates are automatically removed unless `-KeepCert` specified
-- No admin privileges required
+### Retrieval script parameters
 
-## Logs
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `-LEApiToken` | **Yes** | LE API token |
+| `-BaseUrl` | **Yes** | LE appliance URL |
+| `-EnvironmentId` | Conditional | Single environment UUID |
+| `-EnvironmentIds` | Conditional | Array of environment UUIDs |
+| `-EnvironmentIdPercent/Iops/Ms/KBps/BytesPerSec` | Conditional | Per-unit environment UUIDs |
+| `-LastHours` | No | Hours of data to retrieve (default: 1) |
+| `-StartTime` | No | ISO 8601 start time (overrides -LastHours) |
+| `-EndTime` | No | ISO 8601 end time |
+| `-ApiVersion` | No | LE API version (default: v8-preview) |
+| `-OutputDir` | No | Output directory (default: script dir) |
+| `-MetricGroups` | No | Filter by metric group name |
+| `-ImportServerCert` | No | Import LE cert before connecting |
+| `-KeepCert` | No | Keep imported cert after exit |
 
-Each run creates:
-- `Nutanix-LE-Metrics_YYYYMMDD_HHMMSS.log` - Structured log file
-- `Nutanix-LE-Metrics_YYYYMMDD_HHMMSS_transcript.log` - Full PowerShell transcript
+---
+
+## Finding Your Cluster ExtId
+
+The Cluster ExtId is required for host and VM stats. Get it from Prism Central:
+
+```
+https://your-prism-central.example.com:9440/api/clustermgmt/v4.0/config/clusters
+```
+
+Authenticate with your Prism Central credentials. Look for `extId` in the response for your cluster.
+
+---
+
+## How Environments Work
+
+Login Enterprise Platform Metrics can only display one Y-axis unit at a time. To show all Nutanix metrics on the same screen, you need separate environments per unit type — each linked to its own test. The Platform Metrics tab in the test result then shows metrics from that environment's unit group.
+
+**Multi-environment setup** (full visibility):
+
+```
+Nutanix-Percent   → CPU %, Memory %          → linked to Continuous Test A
+Nutanix-IOPS      → Storage IOPS             → linked to Continuous Test B
+Nutanix-Latency   → Storage Latency          → linked to Continuous Test C
+Nutanix-Bandwidth → IO Bandwidth             → linked to Continuous Test D
+Nutanix-Network   → VM Network RX/TX         → linked to Continuous Test E
+```
+
+**Single-environment setup** (Power BI mode):
+
+```
+Nutanix-All → all metrics → linked to any test
+```
+
+Use `-LEEnvironmentId` for the single-environment mode. All metrics land in one place, which makes Power BI integration straightforward.
+
+---
+
+## Caveats and Known Behaviors
+
+**VM stats require a warm-up period.** After a VM is created or powered on, Prism Central needs 5-10 minutes before the stats endpoint returns data. The script handles this gracefully and logs a note.
+
+**VM Memory Usage at 100% for the Prism Central VM is expected.** PC pre-allocates its full memory allocation at startup. This is normal behavior, not a problem.
+
+**Host metric count varies by run (typically 8-11).** Some host metrics return null when there is no activity for that stat in the sampling window (e.g., no read IOPS means no read latency value). The script skips nulls and uploads only what it gets. This is correct behavior.
+
+**Cluster stats occasionally return 0 metrics on older CE hardware.** The Prism Element v2 API can intermittently return empty stats on Nutanix Community Edition. This does not affect production clusters.
+
+**Prism Central v4 API rate limits VM stats calls.** If you have many VMs, rapid back-to-back calls will hit a 429 rate limit. The script adds a 500ms delay between VM calls to reduce this. On very large clusters (50+ VMs), the collection loop may exceed the 30-second polling interval — the script detects this and logs a warning, then starts the next iteration immediately rather than compounding the delay.
+
+**PS5 error buffer count.** On PowerShell 5.1, the PS error buffer may show a high number (e.g. 64 errors) at the end of a run. This is PS5 accumulating all handled exceptions in the session. The `Errors logged` line in the summary is the accurate count of real errors. The PS error buffer is informational only.
+
+**Prism Central connectivity.** If PC is unreachable, the script detects this at pre-flight and skips all PC-dependent work (version negotiation, host stats, VM stats). Cluster stats continue normally. The script will not hang waiting for PC timeouts mid-run.
+
+**The `bytesPerSec` environment.** VM Network RX/TX metrics use `bytesPerSec` as their unit. This requires a separate environment if using multi-environment mode. If you do not configure `-EnvironmentIdBytesPerSec`, those metrics are silently skipped — no upload attempt is made and no error is logged.
+
+---
 
 ## Troubleshooting
 
-### Certificate Errors (New in v1.5.0)
+**Pre-flight fails with "Nutanix PE: connection failed"**
+- Verify the host is reachable on port 9440
+- Check the username and password
+- Confirm VPN if required
 
-**Symptom:** `System.Security.Cryptography.X509Certificates` errors
+**Pre-flight warns "Prism Central: connection failed"**
+- Host and VM stats will be skipped for this run
+- Cluster stats still collected and uploaded
+- Check PC IP/hostname and port 9440 access
 
-**Solution:** Use the `-ImportServerCert` flag:
+**Upload timeout errors**
+- Usually transient — the retry logic (3 attempts, exponential backoff) handles these
+- If persistent, check LE appliance connectivity and API token validity
+- Verify environment IDs are correct — uploading to a non-existent env ID causes the server to close the connection
+
+**VM stats show 404 errors**
+- PC may not have collected a stats window yet for newly created VMs — wait 5-10 minutes
+- Verify the VM ExtId is valid in PC (check `/api/vmm/v4.0/ahv/config/vms/{extId}`)
+
+**429 Too Many Requests on VM stats**
+- PC is rate limiting consecutive VM stats calls
+- The script logs a WARN and skips that VM for this iteration
+- Reduce the number of VMs being monitored with `-VmFilter`
+
+**VmFilter returns 0 matches**
+- Names are case-sensitive and must match exactly as they appear in Prism Element
+- Check the VM name in the Prism Element UI
+
+**Certificate errors on PS5**
+
+If you get SSL/TLS or certificate errors connecting to the Login Enterprise appliance, the appliance's certificate is not trusted on the machine running the script. Two options:
+
+Option 1 — let the script handle it:
 ```powershell
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -ImportServerCert -RunOnce
+.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" ... -ImportServerCert -RunOnce
+```
+This fetches and imports the LE appliance certificate into your `CurrentUser\Root` trust store automatically. No admin required. The cert is removed when the script exits unless you add `-KeepCert`.
+
+Option 2 — install it manually (recommended in CrowdStrike/EDR environments):
+1. Open `https://your-le-appliance.example.com` in a browser
+2. Click the padlock → view certificate → export/download the certificate
+3. Open `certmgr.msc` → Trusted Root Certification Authorities → Certificates → right-click → Import
+4. Run the script without `-ImportServerCert`
+
+Some EDR tools (CrowdStrike, etc.) may flag the automatic import approach. Option 2 avoids that entirely.
+
+**Enable verbose logging for more detail:**
+```powershell
+.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" ... -Verbose -RunOnce
 ```
 
-This properly imports the Login Enterprise appliance's self-signed certificate into your trust store.
+---
 
-### Debugging with Verbose Mode
+## Where to Run the Scripts
 
-For detailed diagnostic information, use the `-Verbose` flag:
+The scripts can run from any Windows machine that has network access to both Nutanix (port 9440) and the Login Enterprise appliance (port 443). Common setups include:
 
-```powershell
-.\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -Verbose -RunOnce
-```
+- A dedicated management or jump box
+- A Login Enterprise Launcher VM on the same network as the Nutanix cluster
+- A workstation with VPN access to both environments
 
-This shows:
-- URL validation results
-- API request/response timing
-- Certificate import details (if using `-ImportServerCert`)
-- Detailed upload progress
-- Configuration validation steps
+There is no agent, no service installation, and no requirement to run on the Nutanix host itself.
 
-### Common Issues
+---
 
-#### 500 Internal Server Error
-- The environment ID may be invalid or broken
-- Try creating a new environment in Login Enterprise
+## Running as a Windows Scheduled Task
 
-#### Connection refused to Nutanix
-- Verify Nutanix host is reachable on port 9440
-- Check VPN connectivity if required
+To run the collector continuously in the background without a PowerShell window open, set it up as a Windows Scheduled Task.
 
-#### No data in Platform Metrics UI
-- Ensure the feature flag is enabled
-- Verify the environment is linked to a continuous test
-- Check that the test is in the correct time range
+### Basic setup
+
+1. Open Task Scheduler → Create Task
+2. **General tab:** Give it a name (e.g. "Nutanix LE Metrics"), select "Run whether user is logged on or not", check "Run with highest privileges"
+3. **Triggers tab:** New trigger → On a schedule → Daily, repeat every 5 minutes (or whatever interval you prefer)
+4. **Actions tab:** New action → Start a program
+   - Program: `powershell.exe`
+   - Arguments:
+   ```
+   -NonInteractive -ExecutionPolicy Bypass -File "C:\Scripts\Nutanix-LE-PlatformMetrics.ps1" -NutanixPassword "YourPassword" -LEApiToken "YourToken" -NutanixHost "your-nutanix.example.com" -LEApplianceUrl "https://your-le-appliance.example.com" -LEEnvironmentId "your-env-uuid" -CollectHostStats -CollectVmStats
+   ```
+5. **Settings tab:** Check "If the task is already running, do not start a new instance"
+
+The script handles its own polling loop internally — you do not need to configure repetition in Task Scheduler unless you want the OS to restart the script if it exits unexpectedly. The simplest approach is to run the script with no `-RunOnce` or `-Iterations` flag, let it loop indefinitely, and set the scheduled task to restart on failure.
+
+> **Note:** Store credentials securely. Do not hardcode passwords in task arguments visible to other users. Use a dedicated service account with read-only Nutanix access where possible.
+
+---
+
+
+
+A Power BI connector and report template for Login Enterprise Platform Metrics is available at:
+
+**[https://github.com/LoginVSI/LE-PBI-Connector](https://github.com/LoginVSI/LE-PBI-Connector)**
+
+Use `-LEEnvironmentId` (single-environment mode) when running the collector alongside Power BI — all metrics land in one environment, which simplifies the connector configuration.
+
+---
+
+## Useful Links
+
+| Resource | URL |
+|----------|-----|
+| Login Enterprise docs | https://docs.loginvsi.com |
+| Configuring Environments | https://docs.loginvsi.com/login-enterprise/configuring-environments-optional |
+| Continuous Testing guide | https://docs.loginvsi.com/login-enterprise/configuring-continuous-testing |
+| Load Testing guide | https://docs.loginvsi.com/login-enterprise/configuring-load-testing |
+| Nutanix v4 API reference | https://developers.nutanix.com/api-reference |
+| Nutanix PC v4 API version negotiation | https://www.nutanix.dev/2026/01/23/nutanix-v4-sdk-api-version-negotiation-in-prism-central-7-5/ |
+| Power BI connector repo | https://github.com/LoginVSI/LE-PBI-Connector |
+| This repo | https://github.com/LoginVSI/nutanix-platform-metrics |
+
+---
+
+| File | Version | Description |
+|------|---------|-------------|
+| `Nutanix-LE-PlatformMetrics.ps1` | 2.0.0 | Collector script |
+| `Get-LEPlatformMetrics.ps1` | 2.0.0 | Retrieval and export script |
+| `README.md` | — | This file |
+
+The config JSON file (`nutanix-config.json`) from earlier versions has been removed. All configuration is passed via command-line parameters.
+
+---
+
+## Security
+
+Passwords and API tokens are never stored in scripts or config files. Always pass them as command-line parameters.
+
+Certificate import (via `-ImportServerCert`) uses `CurrentUser\Root` and does not require admin privileges. Imported certificates are automatically removed after each run unless `-KeepCert` is specified.
+
+---
 
 ## Version History
 
-- **1.5.0** - Enterprise-grade certificate handling, `-ImportServerCert` and `-KeepCert` parameters
-- **1.4.0** - Enhanced error handling, verbose mode, rate limit detection, graceful Ctrl+C, exit codes
-- **1.3.0** - Required command line params for sensitive data, config file support
-- **1.2.0** - Multi-environment support, time sync, retry logic
-- **1.0.0** - Initial release
+### v2.0.0 (April 2026)
+- Host-level metrics via Prism Central v4 clustermgmt API
+- VM-level metrics via Prism Central v4 vmm API
+- Smart API version negotiation (PC 7.5+ uses endpoint, older uses v4.0 default)
+- Single environment mode (`-LEEnvironmentId`) for Power BI
+- `-VmFilter` for targeted VM collection
+- `-CollectHostStats` and `-CollectVmStats` scope toggles
+- `-EnvironmentIdBytesPerSec` for VM network metrics
+- Pre-flight PC connectivity check
+- Polling interval compensation when collection exceeds poll window
+- Placeholder environment ID skip (no failed uploads on unconfigured envs)
+- Get script updated to match nVector patterns — log file output, PS5 fallback, UriBuilder, componentType in CSV
+
+### v1.5.0 (January 2026)
+- Enterprise certificate handling (`-ImportServerCert`, `-KeepCert`)
+- Truist pilot shipped
+
+### v1.4.0
+- Enhanced error handling, verbose mode, rate limit detection, graceful Ctrl+C, exit codes
+
+### v1.3.0
+- Required command-line params for sensitive data, config file support
+
+### v1.2.0
+- Multi-environment support, time sync, retry logic
+
+### v1.0.0
+- Initial release
+
+---
 
 ## License
 
-MIT License
+MIT License — Copyright (c) 2026 Login VSI
 
-Copyright (c) 2026 Login VSI
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+---
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-## Disclaimer
-
-This is a community-supported prototype integration. Use at your own risk.
+*This is a customer preview. For questions or feedback, contact your Login VSI account team.*

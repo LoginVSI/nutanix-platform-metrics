@@ -1,84 +1,255 @@
 <#
 .SYNOPSIS
-    Login Enterprise Platform Metrics Retrieval Tool
-    
+    Login Enterprise Platform Metrics Retrieval Tool - Nutanix Integration
+
 .DESCRIPTION
-    Retrieves Platform Metrics data from Login Enterprise API.
-    Exports to CSV and JSON for analysis or verification.
-    
+    Retrieves Nutanix Platform Metrics data from the Login Enterprise API.
+    Supports single environment ID, per-unit environment IDs, or an array of IDs.
+    Exports results to timestamped CSV and JSON files for analysis or verification.
+
 .PARAMETER LEApiToken
-    REQUIRED. Login Enterprise API token.
+    REQUIRED. Login Enterprise API token (Configuration access level).
+
+.PARAMETER EnvironmentId
+    Single environment UUID. Use for Power BI / single-environment mode.
+    Mutually exclusive with per-unit params and -EnvironmentIds.
+
+.PARAMETER EnvironmentIds
+    Array of environment UUIDs. Use this OR -EnvironmentId, not both.
+    Example: -EnvironmentIds @("uuid-1","uuid-2")
+
+.PARAMETER EnvironmentIdPercent
+    Environment UUID for percent-unit metrics (multi-environment mode).
+
+.PARAMETER EnvironmentIdIops
+    Environment UUID for iops-unit metrics (multi-environment mode).
+
+.PARAMETER EnvironmentIdMs
+    Environment UUID for ms-unit metrics (multi-environment mode).
+
+.PARAMETER EnvironmentIdKBps
+    Environment UUID for kBps-unit metrics (multi-environment mode).
+
+.PARAMETER EnvironmentIdBytesPerSec
+    Environment UUID for bytesPerSec-unit metrics (VM network, multi-environment mode).
+
+.PARAMETER StartTime
+    Start of time range in ISO 8601 Zulu format. e.g. 2026-04-08T00:00:00.000Z
+    If omitted, -LastHours is used instead.
+
+.PARAMETER EndTime
+    End of time range in ISO 8601 Zulu format. e.g. 2026-04-08T23:59:59.999Z
+    If omitted, -LastHours is used instead.
+
+.PARAMETER LastHours
+    Retrieve metrics from the last N hours. Default: 1.
+    Ignored if -StartTime and -EndTime are both provided.
+
+.PARAMETER BaseUrl
+    Base URL of the Login Enterprise appliance.
+    Example: https://bpleva02.southcentralus.cloudapp.azure.com
+
+.PARAMETER ApiVersion
+    API version segment. Default: v8-preview.
+
+.PARAMETER MetricGroups
+    Optional array of metric group filters to narrow results.
+
+.PARAMETER OutputDir
+    Directory for CSV, JSON, and log output files. Defaults to script directory.
+
+.PARAMETER LogFilePath
+    Path for script log file. Defaults to OutputDir\Get-LEPlatformMetrics_Log_<timestamp>.txt
 
 .PARAMETER ImportServerCert
-    Import Login Enterprise appliance certificate into CurrentUser\Root store (for self-signed certs)
+    Import the LE appliance certificate into CurrentUser\Root before the request.
+    Use for appliances with self-signed or private CA certificates.
 
 .PARAMETER KeepCert
-    Keep imported certificate after script completes (default: remove on exit)
+    Used with -ImportServerCert. Keeps imported certs after the run.
+    If omitted, any newly imported certs are removed on exit.
 
 .EXAMPLE
-    .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -LastHours 1
+    # Last 1 hour, single environment (Power BI mode)
+    .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -EnvironmentId "uuid" -BaseUrl "https://my.le.com"
 
 .EXAMPLE
-    .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -ImportServerCert -EnvironmentIdPercent "env-id" -LastHours 1
+    # Last 2 hours, multi-environment mode
+    .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -BaseUrl "https://my.le.com" -LastHours 2 `
+        -EnvironmentIdPercent "uuid-1" -EnvironmentIdIops "uuid-2" -EnvironmentIdMs "uuid-3" -EnvironmentIdKBps "uuid-4"
+
+.EXAMPLE
+    # Specific time range, all 5 environments
+    .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -BaseUrl "https://my.le.com" `
+        -StartTime "2026-04-08T10:00:00.000Z" -EndTime "2026-04-08T11:00:00.000Z" `
+        -EnvironmentIdPercent "uuid-1" -EnvironmentIdIops "uuid-2" `
+        -EnvironmentIdMs "uuid-3" -EnvironmentIdKBps "uuid-4" -EnvironmentIdBytesPerSec "uuid-5"
 
 .NOTES
-    Version: 1.3.0 | Author: Login VSI | January 2026
+    Version: 2.0.0 | Author: Login VSI | April 2026
+    PowerShell 5.1+ compatible. Tested on PS 5.1. PS7 supported.
+    Companion retrieval script for Nutanix-LE-PlatformMetrics.ps1 v2.0.0
 #>
 
 param(
     [Parameter(Mandatory = $true)][string]$LEApiToken,
-    [Parameter(Mandatory = $false)][string]$StartTime,
-    [Parameter(Mandatory = $false)][string]$EndTime,
+
+    # Environment ID modes - single, array, or per-unit
     [Parameter(Mandatory = $false)][string]$EnvironmentId,
+    [Parameter(Mandatory = $false)][string[]]$EnvironmentIds,
     [Parameter(Mandatory = $false)][string]$EnvironmentIdPercent,
     [Parameter(Mandatory = $false)][string]$EnvironmentIdIops,
     [Parameter(Mandatory = $false)][string]$EnvironmentIdMs,
     [Parameter(Mandatory = $false)][string]$EnvironmentIdKBps,
-    [Parameter(Mandatory = $false)][string]$BaseUrl = "https://your-le-appliance.example.com",
-    [Parameter(Mandatory = $false)][string]$LEApiVersion = "v8-preview",
+    [Parameter(Mandatory = $false)][string]$EnvironmentIdBytesPerSec,
+
+    # Time range
+    [Parameter(Mandatory = $false)][string]$StartTime,
+    [Parameter(Mandatory = $false)][string]$EndTime,
     [Parameter(Mandatory = $false)][int]$LastHours = 1,
+
+    # Connection
+    [Parameter(Mandatory = $false)][string]$BaseUrl = "https://your-le-appliance.example.com",
+    [Parameter(Mandatory = $false)][string]$ApiVersion = "v8-preview",
     [Parameter(Mandatory = $false)][string[]]$MetricGroups,
+
+    # Output
     [Parameter(Mandatory = $false)][string]$OutputDir,
+    [Parameter(Mandatory = $false)][string]$LogFilePath,
+
+    # Cert
     [Parameter(Mandatory = $false)][switch]$ImportServerCert,
     [Parameter(Mandatory = $false)][switch]$KeepCert
 )
 
-$Version = "1.3.0"
+# =====================================================
+# Version and output setup
+# =====================================================
+$ScriptVersion = "2.0.0"
+$Timestamp     = (Get-Date).ToString("yyyyMMdd_HHmmss")
+
 if (-not $OutputDir) { $OutputDir = $PSScriptRoot }
-$Timestamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
-$CsvPath = Join-Path $OutputDir "PlatformMetrics_$Timestamp.csv"
-$JsonPath = Join-Path $OutputDir "PlatformMetrics_$Timestamp.json"
+if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
+
+$CsvPath  = Join-Path $OutputDir "Get-LEPlatformMetrics_$Timestamp.csv"
+$JsonPath = Join-Path $OutputDir "Get-LEPlatformMetrics_$Timestamp.json"
+if (-not $LogFilePath) { $LogFilePath = Join-Path $OutputDir "Get-LEPlatformMetrics_Log_$Timestamp.txt" }
+
 $script:ImportedCertThumbs = @()
 
-$EnvironmentIds = @()
-if ($EnvironmentId) {
-    $EnvironmentIds = @($EnvironmentId)
-} elseif ($EnvironmentIdPercent -or $EnvironmentIdIops -or $EnvironmentIdMs -or $EnvironmentIdKBps) {
-    if ($EnvironmentIdPercent) { $EnvironmentIds += $EnvironmentIdPercent }
-    if ($EnvironmentIdIops) { $EnvironmentIds += $EnvironmentIdIops }
-    if ($EnvironmentIdMs) { $EnvironmentIds += $EnvironmentIdMs }
-    if ($EnvironmentIdKBps) { $EnvironmentIds += $EnvironmentIdKBps }
+# =====================================================
+# Logging
+# =====================================================
+function Write-Log {
+    param([string]$Message, [switch]$IsError, [switch]$IsWarning)
+    $ts        = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $formatted = "$ts - $Message"
+    try {
+        $logDir = Split-Path -Parent $LogFilePath
+        if ($logDir -and -not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+        Add-Content -Path $LogFilePath -Value $formatted -ErrorAction SilentlyContinue
+    } catch {}
+    if ($IsError)        { Write-Host $formatted -ForegroundColor Red }
+    elseif ($IsWarning)  { Write-Host $formatted -ForegroundColor Yellow }
+    else                 { Write-Host $formatted }
+}
+
+# =====================================================
+# Banner
+# =====================================================
+Write-Host ""
+Write-Host "========================================================================" -ForegroundColor Cyan
+Write-Host "  Login Enterprise Platform Metrics Retrieval Tool v$ScriptVersion" -ForegroundColor Cyan
+Write-Host "  Nutanix Integration" -ForegroundColor Cyan
+Write-Host "========================================================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Log "==== Script started. Version $ScriptVersion ===="
+Write-Log "PowerShell version: $($PSVersionTable.PSVersion.ToString())"
+
+# =====================================================
+# Resolve environment IDs
+# =====================================================
+$ResolvedEnvironmentIds = @()
+
+if ($EnvironmentId -and $EnvironmentIds) {
+    Write-Log "Both -EnvironmentId and -EnvironmentIds provided. Using -EnvironmentIds." -IsWarning
+    if ($EnvironmentIds.Count -eq 1 -and $EnvironmentIds[0] -match ',') {
+        $ResolvedEnvironmentIds = $EnvironmentIds[0] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    } else {
+        $ResolvedEnvironmentIds = $EnvironmentIds
+    }
+} elseif ($EnvironmentIds) {
+    if ($EnvironmentIds.Count -eq 1 -and $EnvironmentIds[0] -match ',') {
+        $ResolvedEnvironmentIds = $EnvironmentIds[0] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    } else {
+        $ResolvedEnvironmentIds = $EnvironmentIds
+    }
+} elseif ($EnvironmentId) {
+    if ($EnvironmentId -match ',') {
+        $ResolvedEnvironmentIds = $EnvironmentId -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    } else {
+        $ResolvedEnvironmentIds = @($EnvironmentId)
+    }
 } else {
-    $EnvironmentIds = @(
-        "00000000-0000-0000-0000-000000000001",
-        "00000000-0000-0000-0000-000000000002",
-        "00000000-0000-0000-0000-000000000003",
-        "00000000-0000-0000-0000-000000000004"
-    )
+    # Per-unit mode
+    if ($EnvironmentIdPercent)    { $ResolvedEnvironmentIds += $EnvironmentIdPercent }
+    if ($EnvironmentIdIops)       { $ResolvedEnvironmentIds += $EnvironmentIdIops }
+    if ($EnvironmentIdMs)         { $ResolvedEnvironmentIds += $EnvironmentIdMs }
+    if ($EnvironmentIdKBps)       { $ResolvedEnvironmentIds += $EnvironmentIdKBps }
+    if ($EnvironmentIdBytesPerSec){ $ResolvedEnvironmentIds += $EnvironmentIdBytesPerSec }
 }
 
-Write-Host "`n========================================================================" -ForegroundColor Cyan
-Write-Host "  Login Enterprise Platform Metrics Retrieval Tool v$Version" -ForegroundColor Cyan
-Write-Host "========================================================================`n" -ForegroundColor Cyan
+if ($ResolvedEnvironmentIds.Count -eq 0) {
+    Write-Log "No environment IDs provided. Supply -EnvironmentId, -EnvironmentIds, or per-unit params." -IsError
+    Write-Host ""
+    Write-Host "Example:" -ForegroundColor Yellow
+    Write-Host "  .\Get-LEPlatformMetrics.ps1 -LEApiToken `"token`" -EnvironmentId `"your-env-uuid`" -BaseUrl `"https://my.le.com`"" -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
 
-if ($LastHours -gt 0 -and -not $StartTime) {
-    $EndTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+# Skip placeholder env IDs
+$ResolvedEnvironmentIds = @($ResolvedEnvironmentIds | Where-Object { $_ -notmatch "^0{8}-" })
+if ($ResolvedEnvironmentIds.Count -eq 0) {
+    Write-Log "All provided environment IDs are placeholders (all zeros). Nothing to query." -IsError
+    exit 1
+}
+
+Write-Log "Resolved $($ResolvedEnvironmentIds.Count) environment ID(s) to query."
+
+# =====================================================
+# Resolve time range
+# =====================================================
+if ($StartTime -and $EndTime) {
+    Write-Log "Using provided time range: $StartTime to $EndTime"
+} else {
+    $EndTime   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
     $StartTime = (Get-Date).AddHours(-$LastHours).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    Write-Log "Using last $LastHours hour(s). Range: $StartTime to $EndTime"
 }
 
-Write-Host "Time range: $StartTime to $EndTime" -ForegroundColor Cyan
-Write-Host "Base URL: $BaseUrl" -ForegroundColor Cyan
+Write-Host "Time range   : $StartTime to $EndTime" -ForegroundColor Cyan
+Write-Host "Base URL     : $BaseUrl" -ForegroundColor Cyan
+Write-Host "API version  : $ApiVersion" -ForegroundColor Cyan
+Write-Host "Environments : $($ResolvedEnvironmentIds.Count)" -ForegroundColor Cyan
+Write-Host "Output dir   : $OutputDir" -ForegroundColor Cyan
+Write-Host ""
 
+# =====================================================
+# TLS
+# =====================================================
+try {
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        Write-Log "Forced TLS 1.2 (PS5)."
+    }
+} catch {
+    Write-Log "Could not set TLS 1.2: $($_.Exception.Message)" -IsWarning
+}
+
+# =====================================================
+# Certificate functions
+# =====================================================
 function Get-RemoteCertificates {
     param([Parameter(Mandatory=$true)][string]$ServerHost, [int]$ServerPort = 443)
     $certList = New-Object System.Collections.ArrayList
@@ -92,20 +263,14 @@ function Get-RemoteCertificates {
         }
     }
     try {
-        $client = $null; $ssl = $null
         $client = New-Object System.Net.Sockets.TcpClient
         $client.Connect($ServerHost, $ServerPort)
-        $stream = $client.GetStream()
-        $ssl = New-Object System.Net.Security.SslStream($stream, $false, ({ $true }))
+        $ssl = New-Object System.Net.Security.SslStream($client.GetStream(), $false, ({ $true }))
         $ssl.AuthenticateAsClient($ServerHost)
-        $remote = $ssl.RemoteCertificate
-        if ($remote) {
-            $leaf = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($remote)
-            Add-ChainFromLeaf -leaf $leaf
-            try { $ssl.Close() } catch {}
-            try { $client.Close() } catch {}
-            return ,($certList.ToArray())
-        }
+        $leaf = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
+        Add-ChainFromLeaf -leaf $leaf
+        try { $ssl.Close(); $client.Close() } catch {}
+        return ,($certList.ToArray())
     } catch {
         try { if ($ssl) { $ssl.Dispose() } } catch {}
         try { if ($client) { $client.Close() } } catch {}
@@ -114,56 +279,35 @@ function Get-RemoteCertificates {
         $oldCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s,$c,$ch,$e) return $true }
         try {
-            $uri = "https://$ServerHost/"
-            $req = [System.Net.HttpWebRequest]::Create($uri)
-            $req.Method = 'HEAD'
-            $req.Timeout = 15000
-            try {
-                $resp = $req.GetResponse()
-                try { $resp.Close() } catch {}
-            } catch [System.Net.WebException] {
-                if ($_.Exception.Response) { try { $_.Exception.Response.Close() } catch {} }
-            }
+            $req = [System.Net.HttpWebRequest]::Create("https://$ServerHost/")
+            $req.Method = "HEAD"; $req.Timeout = 15000
+            try { $resp = $req.GetResponse(); try { $resp.Close() } catch {} } catch [System.Net.WebException] { if ($_.Exception.Response) { try { $_.Exception.Response.Close() } catch {} } }
             $svcCert = $req.ServicePoint.Certificate
-            if ($svcCert) {
-                $leaf2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($svcCert)
-                Add-ChainFromLeaf -leaf $leaf2
-            } else { throw "No certificate available" }
-        } finally {
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $oldCallback
-        }
+            if ($svcCert) { Add-ChainFromLeaf -leaf (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($svcCert)) }
+            else { throw "No certificate from ServicePoint for $ServerHost" }
+        } finally { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $oldCallback }
     } catch { throw $_ }
     return ,($certList.ToArray())
 }
 
 function Import-ServerCertificates {
     param([Parameter(Mandatory=$true)][string]$ServerHost, [int]$ServerPort = 443)
-    Write-Host "Fetching certificate from ${ServerHost}:${ServerPort}..."
+    Write-Log "Fetching certificate from ${ServerHost}:${ServerPort}..."
     $importedThumbs = @()
     try { $certs = Get-RemoteCertificates -ServerHost $ServerHost -ServerPort $ServerPort }
-    catch {
-        Write-Host "Failed to obtain certificate: $($_.Exception.Message)" -ForegroundColor Red
-        return ,@()
-    }
-    if (-not $certs -or $certs.Length -eq 0) {
-        Write-Host "No certificates found" -ForegroundColor Red
-        return ,@()
-    }
+    catch { Write-Log "Failed to obtain certificate: $($_.Exception.Message)" -IsError; return ,@() }
+    if (-not $certs -or $certs.Length -eq 0) { Write-Log "No certificates found." -IsError; return ,@() }
     $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","CurrentUser")
     try {
         $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
         foreach ($c in $certs) {
-            $x2 = if ($c -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) { $c } else { New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($c) }
+            $x2    = if ($c -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) { $c } else { New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($c) }
             $thumb = $x2.Thumbprint
-            $exists = $false
-            foreach ($ec in $store.Certificates) { if ($ec.Thumbprint -eq $thumb) { $exists = $true; break } }
-            if (-not $exists) {
-                $store.Add($x2)
-                $importedThumbs += $thumb
-                Write-Host "Imported cert $thumb" -ForegroundColor Green
-            }
+            $exists = $store.Certificates | Where-Object { $_.Thumbprint -eq $thumb }
+            if (-not $exists) { $store.Add($x2); $importedThumbs += $thumb; Write-Log "Imported cert $thumb into CurrentUser\Root" }
+            else { Write-Log "Cert $thumb already present." }
         }
-    } catch { Write-Host "Import error: $($_.Exception.Message)" -ForegroundColor Red }
+    } catch { Write-Log "Import error: $($_.Exception.Message)" -IsError }
     finally { try { $store.Close() } catch {} }
     return ,$importedThumbs
 }
@@ -176,118 +320,156 @@ function Remove-ImportedCertificates {
     try {
         foreach ($thumb in $Thumbprints) {
             $match = $store.Certificates | Where-Object { $_.Thumbprint -eq $thumb }
-            if ($match) {
-                $store.Remove($match)
-                Write-Host "Removed cert $thumb" -ForegroundColor Green
-            }
+            if ($match) { $store.Remove($match); Write-Log "Removed cert $thumb from CurrentUser\Root" }
         }
     } finally { $store.Close() }
 }
 
+# =====================================================
+# Main
+# =====================================================
 try {
-    if ($PSVersionTable.PSVersion.Major -lt 7) {
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-    }
 
+    # Import cert if requested
     if ($ImportServerCert) {
         try {
-            $leUri = [uri]$BaseUrl
+            $leUri  = [uri]$BaseUrl
             $lePort = if ($leUri.Port -ne -1 -and $leUri.Port -ne 0) { $leUri.Port } else { 443 }
-            Write-Host "Importing Login Enterprise certificate..." -ForegroundColor Cyan
+            Write-Log "Importing LE appliance certificate..."
             $script:ImportedCertThumbs = Import-ServerCertificates -ServerHost $leUri.Host -ServerPort $lePort
-            if ($script:ImportedCertThumbs.Length -gt 0) {
-                Write-Host "Imported $($script:ImportedCertThumbs.Length) certificate(s)" -ForegroundColor Green
-            }
+            if ($script:ImportedCertThumbs.Length -gt 0) { Write-Log "Imported $($script:ImportedCertThumbs.Length) certificate(s)." }
         } catch {
-            Write-Host "Certificate import failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Log "Certificate import failed: $($_.Exception.Message)" -IsWarning
         }
     }
 
-    $AllResults = @()
+    $AllResults  = @()
     $AllDataRows = @()
 
-    foreach ($envId in $EnvironmentIds) {
-        Write-Host "`nQuerying environment: $envId" -ForegroundColor Yellow
-        
-        $queryParams = @(
-            "from=$([uri]::EscapeDataString($StartTime))",
-            "to=$([uri]::EscapeDataString($EndTime))",
-            "environmentIds=$([uri]::EscapeDataString($envId))"
-        )
-        if ($MetricGroups) { foreach ($g in $MetricGroups) { $queryParams += "metricGroups=$([uri]::EscapeDataString($g))" } }
-        
-        $uri = "$($BaseUrl.TrimEnd('/'))/publicApi/$LEApiVersion/platform-metrics?" + ($queryParams -join "&")
-        $headers = @{ "Authorization" = "Bearer $LEApiToken"; "Accept" = "application/json" }
-        
+    foreach ($envId in $ResolvedEnvironmentIds) {
+        Write-Host "Querying environment: $envId" -ForegroundColor Yellow
+        Write-Log "Querying environment ID: $envId"
+
+        # Build URL
         try {
-            $params = @{ Uri = $uri; Method = "GET"; Headers = $headers }
-            if ($PSVersionTable.PSVersion.Major -ge 7) { $params.SkipCertificateCheck = $true }
-            $response = Invoke-RestMethod @params
-            
-            if ($response) {
-                $AllResults += $response
-                foreach ($metric in $response) {
-                    if ($metric.dataPoints) {
-                        foreach ($dp in $metric.dataPoints) {
-                            $AllDataRows += [PSCustomObject]@{
-                                timestamp = $dp.timestamp
-                                value = $dp.value
-                                metricId = $metric.metricId
-                                displayName = $metric.displayName
-                                unit = $metric.unit
-                                instance = $metric.instance
-                                group = $metric.group
-                                environmentKey = $metric.environmentKey
-                            }
+            $ub = New-Object System.UriBuilder($BaseUrl.TrimEnd("/"))
+            $ub.Path = ($ub.Path.TrimEnd("/") + "/publicApi/$ApiVersion/platform-metrics").TrimStart("/")
+            $queryParts = @(
+                "from=$([uri]::EscapeDataString($StartTime))",
+                "to=$([uri]::EscapeDataString($EndTime))",
+                "environmentIds=$([uri]::EscapeDataString($envId))"
+            )
+            if ($MetricGroups) { foreach ($g in $MetricGroups) { $queryParts += "metricGroups=$([uri]::EscapeDataString($g))" } }
+            $ub.Query = $queryParts -join "&"
+            $FullUrl  = $ub.Uri.AbsoluteUri
+            Write-Log "URL: $FullUrl"
+        } catch {
+            Write-Log "Failed to construct URL for env $envId : $($_.Exception.Message)" -IsError
+            continue
+        }
+
+        $headers    = @{ "Authorization" = "Bearer $LEApiToken"; "Accept" = "application/json" }
+        $jsonResult = $null
+
+        try {
+            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                $jsonResult = Invoke-RestMethod -Uri $FullUrl -Method GET -Headers $headers -SkipCertificateCheck -ErrorAction Stop
+            } else {
+                $request = [System.Net.HttpWebRequest]::Create($FullUrl)
+                $request.Method = "GET"
+                $request.Headers.Add("Authorization", "Bearer $LEApiToken")
+                $request.Accept  = "application/json"
+                $request.Timeout = 60000
+                $response = $request.GetResponse()
+                $stream   = $response.GetResponseStream()
+                $reader   = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+                $rawJson  = $reader.ReadToEnd()
+                $reader.Close(); $response.Close()
+                $jsonResult = $rawJson | ConvertFrom-Json
+            }
+            Write-Log "GET succeeded for env $envId."
+        } catch {
+            Write-Log "GET failed for env $envId : $($_.Exception.Message)" -IsError
+            continue
+        }
+
+        if ($jsonResult) {
+            $AllResults += $jsonResult
+            $seriesCount = 0
+            foreach ($metric in $jsonResult) {
+                $seriesCount++
+                if ($metric.dataPoints) {
+                    foreach ($dp in $metric.dataPoints) {
+                        $AllDataRows += [PSCustomObject]@{
+                            timestamp      = [string]$dp.timestamp
+                            value          = $dp.value
+                            metricId       = $metric.metricId
+                            environmentKey = $metric.environmentKey
+                            displayName    = $metric.displayName
+                            unit           = $metric.unit
+                            instance       = $metric.instance
+                            componentType  = $metric.componentType
+                            group          = $metric.group
+                            customTags     = if ($metric.customTags) { ($metric.customTags | ConvertTo-Json -Compress) } else { "" }
                         }
                     }
                 }
-                Write-Host "  Retrieved $($response.Count) metric series" -ForegroundColor Green
             }
-        } catch {
-            Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  Retrieved $seriesCount metric series" -ForegroundColor Green
+            Write-Log "Retrieved $seriesCount metric series for env $envId."
+        } else {
+            Write-Log "No data returned for env $envId." -IsWarning
         }
     }
 
-    Write-Host "`n=== SUMMARY ===" -ForegroundColor Cyan
-    $metricSummary = $AllDataRows | Group-Object -Property metricId | ForEach-Object {
-        $sample = $_.Group | Select-Object -First 1
-        [PSCustomObject]@{
-            MetricId = $_.Name
-            DisplayName = $sample.displayName
-            Unit = $sample.unit
-            DataPoints = $_.Count
-        }
-    }
+    # =====================================================
+    # Summary
+    # =====================================================
+    Write-Host ""
+    Write-Host "========================================================================" -ForegroundColor Cyan
+    Write-Host "  SUMMARY" -ForegroundColor Cyan
+    Write-Host "========================================================================" -ForegroundColor Cyan
 
-    if ($metricSummary) {
-        $metricSummary | ForEach-Object {
-            Write-Host "  $($_.DisplayName) [$($_.Unit)] - $($_.DataPoints) data points" -ForegroundColor White
+    if ($AllDataRows.Count -gt 0) {
+        $AllDataRows | Group-Object -Property metricId | ForEach-Object {
+            $sample = $_.Group | Select-Object -First 1
+            Write-Host "  $($sample.displayName) [$($sample.unit)] instance=$($sample.instance) - $($_.Count) data points" -ForegroundColor White
         }
     } else {
-        Write-Host "  No metrics found for the specified time range" -ForegroundColor Yellow
+        Write-Host "  No metrics found for the specified time range and environment(s)." -ForegroundColor Yellow
     }
 
-    Write-Host "`nTotal data points: $($AllDataRows.Count)" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Total data points    : $($AllDataRows.Count)" -ForegroundColor Cyan
+    Write-Host "  Environments queried : $($ResolvedEnvironmentIds.Count)" -ForegroundColor Cyan
 
+    # Save outputs
     if ($AllResults.Count -gt 0) {
-        $AllResults | ConvertTo-Json -Depth 10 | Out-File $JsonPath -Encoding UTF8
-        Write-Host "JSON saved: $JsonPath" -ForegroundColor Green
+        try {
+            $AllResults | ConvertTo-Json -Depth 10 | Out-File $JsonPath -Encoding UTF8
+            Write-Host "  JSON saved : $JsonPath" -ForegroundColor Green
+            Write-Log "JSON saved to: $JsonPath"
+        } catch { Write-Log "Failed to write JSON: $($_.Exception.Message)" -IsError }
     }
 
     if ($AllDataRows.Count -gt 0) {
-        $AllDataRows | Export-Csv -NoTypeInformation -Path $CsvPath -Encoding UTF8
-        Write-Host "CSV saved: $CsvPath" -ForegroundColor Green
+        try {
+            $AllDataRows | Export-Csv -NoTypeInformation -Path $CsvPath -Encoding UTF8
+            Write-Host "  CSV saved  : $CsvPath" -ForegroundColor Green
+            Write-Log "CSV saved to: $CsvPath"
+        } catch { Write-Log "Failed to write CSV: $($_.Exception.Message)" -IsError }
     }
 
-    Write-Host "`n========================================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "========================================================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    if ($AllDataRows.Count -gt 0) { Write-Log "Script completed successfully." }
+    else { Write-Log "Script completed - no data for specified time range and environment(s)." -IsWarning }
+
 } finally {
     if ($ImportServerCert -and -not $KeepCert -and $script:ImportedCertThumbs.Length -gt 0) {
-        try {
-            Write-Host "Removing imported certificates..." -ForegroundColor Cyan
-            Remove-ImportedCertificates -Thumbprints $script:ImportedCertThumbs
-        } catch {
-            Write-Host "Failed to remove certs: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
+        try { Remove-ImportedCertificates -Thumbprints $script:ImportedCertThumbs }
+        catch { Write-Log "Failed to remove imported cert(s): $($_.Exception.Message)" -IsWarning }
     }
 }
