@@ -2,7 +2,7 @@
 
 Collect Nutanix infrastructure metrics — at the cluster, host, and VM level — and surface them alongside Login Enterprise test data in the Platform Metrics UI. Built for EUC performance engineers who want full-stack visibility during load tests, continuous tests, and migration bake-offs without switching between tools.
 
-This integration was originally developed in partnership with Nutanix and validated with Truist Bank. It is currently a **customer preview**.
+This integration was originally developed in partnership with Nutanix. It is currently a **customer preview**.
 
 ---
 
@@ -677,7 +677,6 @@ Certificate import (via `-ImportServerCert`) uses `CurrentUser\Root` and does no
 
 ### v1.5.0 (January 2026)
 - Enterprise certificate handling (`-ImportServerCert`, `-KeepCert`)
-- Truist pilot shipped
 
 ### v1.4.0
 - Enhanced error handling, verbose mode, rate limit detection, graceful Ctrl+C, exit codes
@@ -701,4 +700,4 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 
 ---
 
-*This is a customer preview. For questions or feedback, contact your Login VSI account team.*
+*This is a customer preview. For questions or feedback, contact the Login VSI Product team.*
