@@ -529,6 +529,9 @@ Use `-LEEnvironmentId` for the single-environment mode. All metrics land in one 
 
 ## Troubleshooting
 
+**Host stats return 400 "startTime or endTime refer to time in future"**
+Minor clock skew between the machine running the script and the Nutanix cluster. The script automatically offsets endTime by 30 seconds to compensate. If you see this occasionally it is harmless — host stats will succeed on the next iteration.
+
 **Pre-flight fails with "Nutanix PE: connection failed"**
 - Verify the host is reachable on port 9440
 - Check the username and password
