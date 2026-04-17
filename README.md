@@ -64,7 +64,7 @@ During a Login Enterprise test, you care about what the underlying infrastructur
 | Prism Central | 2024.3 | Required for host and VM stats |
 | AHV | 10.x | VM stats tested on AHV only |
 
-> **Tested with:** AOS 6.8.1, Prism Central 2024.3, AHV 10.x
+> **Tested with:** AOS 6.8.1 (QA), AOS 6.10.1 (production), Prism Central 2024.3 (QA), Prism Central 2024.3.1.4 (production), AHV 10.x
 >
 > **Prism Central 7.5+:** Enables automatic API version negotiation. On older PC versions (any `pc.YYYY.x` format), the script defaults to v4.0 automatically.
 
