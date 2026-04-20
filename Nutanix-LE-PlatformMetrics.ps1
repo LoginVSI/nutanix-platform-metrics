@@ -1,22 +1,22 @@
 <#
 .SYNOPSIS
-    Nutanix to Login Enterprise Platform Metrics Collector - MVP2
+    Nutanix to Login Enterprise Platform Metrics Collector
 
 .DESCRIPTION
     Polls Nutanix cluster, host, and VM statistics from Prism Central v4 API
     and uploads them to Login Enterprise Platform Metrics API.
 
-    Cluster-Level Metrics (MVP1 - via PE v2 or PC v4):
+    Cluster-Level Metrics (via PE v2 or PC v4):
     - CPU Usage (%), Memory Usage (%)
     - Storage IOPS (total, read, write)
     - Storage Latency (avg, read, write) in ms
     - IO Bandwidth (total, read, write) in kBps
 
-    Host-Level Metrics (MVP2 - via PC v4):
+    Host-Level Metrics (via PC v4):
     - CPU Usage (%), Memory Usage (%)
     - Storage IOPS, Latency, Bandwidth per host
 
-    VM-Level Metrics (MVP2 - via PC v4):
+    VM-Level Metrics (via PC v4):
     - CPU Usage (%), CPU Ready Time (%)
     - Memory Usage (%)
     - Disk Latency (ms), Disk Bandwidth (kBps)
@@ -36,13 +36,13 @@
     Prism Element IP or FQDN. Default: value in script config.
 
 .PARAMETER PrismCentralHost
-    Prism Central IP or FQDN. Required for MVP2 host/VM metrics.
+    Prism Central IP or FQDN. Required for host/VM metrics.
 
 .PARAMETER NutanixUser
     Nutanix admin username. Default: admin.
 
 .PARAMETER ClusterExtId
-    Nutanix cluster ExtId (UUID) for PC v4 API calls. Required for MVP2.
+    Nutanix cluster ExtId (UUID) for PC v4 API calls.
 
 .PARAMETER LEApplianceUrl
     Login Enterprise appliance base URL. Default: value in script config.
@@ -118,11 +118,11 @@
     Keep imported certificate after exit (default: remove on clean exit).
 
 .EXAMPLE
-    # Minimal MVP1 - cluster stats only
+    # Cluster stats only
     .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
 
 .EXAMPLE
-    # Full MVP2 - cluster + host + VM stats, multi-environment mode
+    # Cluster + host + VM stats, multi-environment mode
     .\Nutanix-LE-PlatformMetrics.ps1 `
         -NutanixPassword "pass" `
         -LEApiToken "token" `
@@ -207,7 +207,7 @@ $ErrorActionPreference = "Continue"
 # ============================================================
 $script:Config = @{
     NutanixHost              = "your-prism-element.example.com"
-    PrismCentralHost         = ""                          # set for MVP2 host/VM stats
+    PrismCentralHost         = ""                          # set for PC host/VM stats
     NutanixUser              = "admin"
     ClusterExtId             = ""                          # required for PC v4 calls
     LEApplianceUrl           = "https://your-le-appliance.example.com"
@@ -290,7 +290,7 @@ $script:Config.LEApiToken      = $LEApiToken
 #  METRIC DEFINITIONS
 # ============================================================
 
-# Cluster metrics - sourced from PE v2 API (MVP1 parity)
+# Cluster metrics - sourced from PE v2 API 
 $script:ClusterMetrics = @(
     @{ NutanixStat="hypervisor_cpu_usage_ppm";            MetricId="nutanix.cluster.cpu.usage";              DisplayName="Cluster CPU Usage";               Unit="percent";    ComponentType="cluster"; Conversion="ppm_to_percent" },
     @{ NutanixStat="hypervisor_memory_usage_ppm";         MetricId="nutanix.cluster.memory.usage";           DisplayName="Cluster Memory Usage";            Unit="percent";    ComponentType="cluster"; Conversion="ppm_to_percent" },
@@ -305,7 +305,7 @@ $script:ClusterMetrics = @(
     @{ NutanixStat="controller_write_io_bandwidth_kBps";  MetricId="nutanix.cluster.storage.bandwidth.write";DisplayName="Cluster IO Bandwidth (Write)";    Unit="kBps";       ComponentType="cluster"; Conversion="none" }
 )
 
-# Host metrics - sourced from PC v4 clustermgmt API (MVP2)
+# Host metrics - sourced from PC v4 clustermgmt API
 # select keys match clustermgmt v4 API spec (no stats/ prefix)
 $script:HostMetricSelect = "hypervisorCpuUsagePpm,aggregateHypervisorMemoryUsagePpm," +
                            "controllerNumIops,controllerNumReadIops,controllerNumWriteIops," +
@@ -326,7 +326,7 @@ $script:HostMetricMap = @(
     @{ StatKey="controllerWriteIoBandwidthKbps";    MetricId="nutanix.host.storage.bandwidth.write";DisplayName="Host IO Bandwidth (Write)";    Unit="kBps";    Conversion="none" }
 )
 
-# VM metrics - sourced from PC v4 vmm API (MVP2)
+# VM metrics - sourced from PC v4 vmm API
 # select keys use stats/ prefix as required by vmm v4 API spec
 $script:VmMetricSelect = "stats/hypervisorCpuUsagePpm," +
                          "stats/hypervisorCpuReadyTimePpm," +
