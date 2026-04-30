@@ -152,7 +152,7 @@
 param(
     # Required credentials - never default these
     [Parameter(Mandatory = $true)][string]$NutanixPassword,
-    [Parameter(Mandatory = $true)][string]$LEApiToken,
+    [Parameter(Mandatory = $false)][string]$LEApiToken,
 
     # Connection targets
     [Parameter(Mandatory = $false)][string]$NutanixHost,
@@ -201,6 +201,24 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+
+function ConvertFrom-SecureStringToPlainText {
+    param([System.Security.SecureString]$SecureString)
+
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
+    try {
+        [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
+if (-not $LEApiToken) {
+    $LEApiTokenSecure = Read-Host "Paste or type Login Enterprise API token" -AsSecureString
+    $LEApiToken = ConvertFrom-SecureStringToPlainText $LEApiTokenSecure
+    Remove-Variable LEApiTokenSecure -ErrorAction SilentlyContinue
+}
 
 # ============================================================
 #  DEFAULTS - override any of these via command-line params

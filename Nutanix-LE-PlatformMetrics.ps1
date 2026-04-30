@@ -151,8 +151,8 @@
 [CmdletBinding()]
 param(
     # Required credentials - never default these
-    [Parameter(Mandatory = $true)][string]$NutanixPassword,
-    [Parameter(Mandatory = $true)][string]$LEApiToken,
+    [Parameter(Mandatory = $false)][string]$NutanixPassword,
+    [Parameter(Mandatory = $false)][string]$LEApiToken,
 
     # Connection targets
     [Parameter(Mandatory = $false)][string]$NutanixHost,
@@ -201,6 +201,30 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+
+function ConvertFrom-SecureStringToPlainText {
+    param([System.Security.SecureString]$SecureString)
+
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
+    try {
+        [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
+if (-not $LEApiToken) {
+    $secureLEApiToken = Read-Host "Paste or type Login Enterprise API token" -AsSecureString
+    $LEApiToken = ConvertFrom-SecureStringToPlainText $secureLEApiToken
+    Remove-Variable secureLEApiToken -ErrorAction SilentlyContinue
+}
+
+if (-not $NutanixPassword) {
+    $secureNutanixPassword = Read-Host "Enter Nutanix password" -AsSecureString
+    $NutanixPassword = ConvertFrom-SecureStringToPlainText $secureNutanixPassword
+    Remove-Variable secureNutanixPassword -ErrorAction SilentlyContinue
+}
 
 # ============================================================
 #  DEFAULTS - override any of these via command-line params
