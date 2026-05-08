@@ -111,11 +111,12 @@
 .PARAMETER SaveRawResponse
     Save raw Nutanix API responses to JSON files in LogDir.
 
-.PARAMETER ImportServerCert
-    Import LE appliance TLS certificate into CurrentUser\Root store.
-
-.PARAMETER KeepCert
-    Keep imported certificate after exit (default: remove on clean exit).
+.PARAMETER IgnoreCertificateErrors
+    Bypass TLS certificate validation for Login Enterprise appliance connections.
+    Use this if the LE appliance is using its default self-signed certificate and
+    the machine running this script does not have that certificate in its trust store.
+    This bypasses certificate validation entirely. Review your organization's security
+    policies before using this in your environment.
 
 .EXAMPLE
     # Cluster stats only
@@ -144,7 +145,7 @@
 
 .NOTES
     Version: 2.0.0 | Author: Login VSI | April 2026
-    PowerShell 5.1+ compatible. No admin required unless using -ImportServerCert.
+    PowerShell 5.1+ compatible. No admin required.
     PC v4 API version negotiation: automatic. PC < 7.5 defaults to v4.0.
 #>
 
@@ -196,8 +197,7 @@ param(
     # Output and cert
     [Parameter(Mandatory = $false)][string]$LogDir,
     [Parameter(Mandatory = $false)][switch]$SaveRawResponse,
-    [Parameter(Mandatory = $false)][switch]$ImportServerCert,
-    [Parameter(Mandatory = $false)][switch]$KeepCert
+    [Parameter(Mandatory = $false)][switch]$IgnoreCertificateErrors
 )
 
 $ErrorActionPreference = "Continue"
@@ -383,7 +383,6 @@ $script:ErrorCount          = 0
 $script:SuccessCount        = 0
 $script:FailedIterations    = @()
 $script:VerboseLogging      = ($VerbosePreference -eq 'Continue')
-$script:ImportedCertThumbs  = @()
 $script:NegotiatedApiVersion= "v4.0"
 $script:ExitCode            = 0
 $script:Interrupted         = $false
@@ -458,65 +457,56 @@ function Get-LatestSeriesValue { param($Series)
 # ============================================================
 #  TLS / CERT HELPERS
 # ============================================================
+
+# Nutanix (Prism Element and Prism Central) always uses self-signed certificates.
+# Certificate validation is bypassed unconditionally for all Nutanix API calls.
+# This is expected behavior - Nutanix does not require customers to replace the
+# default Prism certificate for API access.
+#
+# Login Enterprise appliance connections use normal certificate validation by default.
+# If the LE appliance is using a certificate trusted by this machine (via your
+# organization's CA, GPO-pushed root, or manual install), connections will work
+# without any additional flags.
+#
+# If you receive an SSL/TLS error connecting to the LE appliance, see the
+# Certificate Handling section in the documentation:
+# https://docs.loginvsi.com/login-enterprise/6.6/nutanix-platform-metrics-integration
+#
+# To install a trusted certificate manually on this machine:
+# https://learn.microsoft.com/windows-hardware/drivers/install/trusted-root-certification-authorities-certificate-store
+
 function Initialize-TlsSettings {
+    # TLS 1.2 baseline for all connections
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
     if ($PSVersionTable.PSVersion.Major -lt 7) {
+        # PS5: install a process-wide cert policy that bypasses validation for
+        # Nutanix calls. LE calls are handled per-request via callback below.
         Add-Type @"
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 public class NutanixTrustAllCerts : ICertificatePolicy {
-    public bool CheckValidationResult(ServicePoint sp, X509Certificate cert, WebRequest req, int problem) { return true; }
+    public bool CheckValidationResult(ServicePoint sp, X509Certificate cert, WebRequest req, int problem) {
+        // Only bypass for Nutanix hosts (port 9440). All other hosts (including LE) use normal validation.
+        return (req != null && req.RequestUri != null && req.RequestUri.Port == 9440) || problem == 0;
+    }
 }
 "@
         [System.Net.ServicePointManager]::CertificatePolicy = New-Object NutanixTrustAllCerts
-        [System.Net.ServicePointManager]::SecurityProtocol  = [System.Net.SecurityProtocolType]::Tls12
-        Write-Log "TLS 1.2 configured (PS5 mode)" -Level VERBOSE
+        Write-Log "TLS configured: Nutanix cert bypass active (PS5 mode)" -Level VERBOSE
     }
 }
 
-function Get-RemoteCertificates { param([string]$ServerHost, [int]$ServerPort = 443)
-    $certList = New-Object System.Collections.ArrayList
-    try {
-        $client = New-Object System.Net.Sockets.TcpClient
-        $client.Connect($ServerHost, $ServerPort)
-        $ssl = New-Object System.Net.Security.SslStream($client.GetStream(), $false, ({ $true }))
-        $ssl.AuthenticateAsClient($ServerHost)
-        $leaf = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
-        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
-        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
-        $null = $chain.Build($leaf)
-        foreach ($e in $chain.ChainElements) { [void]$certList.Add($e.Certificate) }
-        try { $ssl.Close(); $client.Close() } catch {}
-    } catch { throw $_ }
-    return ,$certList.ToArray()
-}
-
-function Import-ServerCertificates { param([string]$ServerHost, [int]$ServerPort = 443)
-    $thumbs = @()
-    try { $certs = Get-RemoteCertificates -ServerHost $ServerHost -ServerPort $ServerPort }
-    catch { Write-Log "Failed to fetch certificate: $($_.Exception.Message)" -Level ERROR; return ,@() }
-    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","CurrentUser")
-    try {
-        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-        foreach ($c in $certs) {
-            $x2 = if ($c -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) { $c } else { New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($c) }
-            $exists = $store.Certificates | Where-Object { $_.Thumbprint -eq $x2.Thumbprint }
-            if (-not $exists) { $store.Add($x2); $thumbs += $x2.Thumbprint; Write-Log "Imported cert $($x2.Thumbprint)" -Level SUCCESS }
-        }
-    } catch { Write-Log "Cert import error: $($_.Exception.Message)" -Level ERROR }
-    finally { try { $store.Close() } catch {} }
-    return ,$thumbs
-}
-
-function Remove-ImportedCertificates { param([string[]]$Thumbprints)
-    if (-not $Thumbprints -or $Thumbprints.Length -eq 0) { return }
-    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","CurrentUser")
-    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-    try {
-        foreach ($t in $Thumbprints) {
-            $match = $store.Certificates | Where-Object { $_.Thumbprint -eq $t }
-            if ($match) { $store.Remove($match); Write-Log "Removed cert $t" -Level SUCCESS }
-        }
-    } finally { $store.Close() }
+function Write-LeCertGuidance {
+    # Called when an SSL/TLS error is detected on an LE appliance connection.
+    Write-Log "  If the LE appliance is using a certificate issued by your organization's CA:" -Level WARN
+    Write-Log "    Export the root CA certificate from the appliance and install it to" -Level WARN
+    Write-Log "    Trusted Root Certification Authorities on this machine." -Level WARN
+    Write-Log "    See: https://learn.microsoft.com/windows-hardware/drivers/install/trusted-root-certification-authorities-certificate-store" -Level WARN
+    Write-Log "  If the LE appliance is using its default self-signed certificate:" -Level WARN
+    Write-Log "    Re-run with -IgnoreCertificateErrors to bypass certificate validation." -Level WARN
+    Write-Log "    See the Certificate Handling section in the documentation for details." -Level WARN
+    Write-Log "    https://docs.loginvsi.com/login-enterprise/6.6/nutanix-platform-metrics-integration" -Level WARN
 }
 
 # ============================================================
@@ -534,11 +524,36 @@ function Build-PcSession {
 }
 
 function Invoke-NutanixApi { param([string]$Uri, [hashtable]$Headers, $Session, [int]$TimeoutSec = 30)
+    # Nutanix API calls always skip cert validation - Prism uses self-signed certs by design.
     $params = @{ Uri = $Uri; Method = "GET"; Headers = $Headers; TimeoutSec = $TimeoutSec; UseBasicParsing = $true }
     if ($Session) { $params.WebSession = $Session }
     if ($PSVersionTable.PSVersion.Major -ge 7) { $params.SkipCertificateCheck = $true }
     $raw = Invoke-WebRequest @params
     return $raw.Content | ConvertFrom-Json
+}
+
+function Invoke-LEApi {
+    param([hashtable]$Params)
+    # LE API calls respect certificate validation unless -IgnoreCertificateErrors is set.
+    if ($IgnoreCertificateErrors -and $PSVersionTable.PSVersion.Major -ge 7) {
+        $Params.SkipCertificateCheck = $true
+    }
+    # PS5: the NutanixTrustAllCerts policy only bypasses port 9440.
+    # With -IgnoreCertificateErrors on PS5, swap to a full bypass policy for this call.
+    if ($IgnoreCertificateErrors -and $PSVersionTable.PSVersion.Major -lt 7) {
+        $saved = [System.Net.ServicePointManager]::CertificatePolicy
+        Add-Type @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAllForLE : ICertificatePolicy {
+    public bool CheckValidationResult(ServicePoint sp, X509Certificate cert, WebRequest req, int problem) { return true; }
+}
+"@ -ErrorAction SilentlyContinue
+        [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllForLE
+        try { return Invoke-RestMethod @Params }
+        finally { [System.Net.ServicePointManager]::CertificatePolicy = $saved }
+    }
+    return Invoke-RestMethod @Params
 }
 
 # ============================================================
@@ -596,8 +611,7 @@ function Get-ServerTimeAdjustment { param([string]$BaseUrl, [string]$Token)
     try {
         $localBefore = [DateTimeOffset]::UtcNow
         $params = @{ Uri = "$($BaseUrl.TrimEnd('/'))/publicApi/$($script:Config.LEApiVersion)/tests"; Method = "GET"; Headers = @{ "Authorization" = "Bearer $Token"; "Accept" = "application/json" }; TimeoutSec = 10; UseBasicParsing = $true }
-        if ($PSVersionTable.PSVersion.Major -ge 7) { $params.SkipCertificateCheck = $true }
-        $response    = Invoke-WebRequest @params
+        $response    = Invoke-LEApi -Params $params
         $localAfter  = [DateTimeOffset]::UtcNow
         $dateHeader  = $response.Headers['Date']; if ($dateHeader -is [array]) { $dateHeader = $dateHeader[0] }
         if (-not $dateHeader) { return [TimeSpan]::Zero }
@@ -768,12 +782,19 @@ function Send-ToLEPlatformMetrics { param([array]$Metrics)
             $attempt++
             try {
                 $params = @{ Uri = $uri; Method = "POST"; Headers = $headers; Body = $bodyJson; ContentType = "application/json"; TimeoutSec = $script:Config.ApiTimeoutSec }
-                if ($PSVersionTable.PSVersion.Major -ge 7) { $params.SkipCertificateCheck = $true }
-                $resp   = Invoke-RestMethod @params
+                $resp   = Invoke-LEApi -Params $params
                 Write-Log "  Uploaded $($batch.Count) metrics to env $($envId.Substring(0,8))... ($($resp.successfullyAddedCount) accepted)" -Level SUCCESS
                 $success = $true
             } catch {
+                $msg    = $_.Exception.Message
                 $status = $_.Exception.Response.StatusCode.value__
+                # Detect SSL/TLS trust errors and surface actionable guidance
+                if ($msg -match "SSL|TLS|trust|certificate|secure channel") {
+                    Write-Log "  SSL/TLS error connecting to LE appliance: $msg" -Level ERROR
+                    Write-LeCertGuidance
+                    $allSuccess = $false
+                    break
+                }
                 $delay  = $script:Config.RetryBaseDelaySec * [Math]::Pow(2, $attempt - 1)
                 if ($status -eq 429) {
                     $ra = $_.Exception.Response.Headers["Retry-After"]
@@ -859,13 +880,12 @@ try {
 
     Initialize-TlsSettings
 
-    if ($ImportServerCert) {
-        try {
-            $leUri   = [uri]$script:Config.LEApplianceUrl
-            $lePort  = if ($leUri.Port -ne -1 -and $leUri.Port -ne 0) { $leUri.Port } else { 443 }
-            Write-Log "Importing LE appliance certificate from $($leUri.Host):$lePort ..." -Level INFO
-            $script:ImportedCertThumbs = Import-ServerCertificates -ServerHost $leUri.Host -ServerPort $lePort
-        } catch { Write-Log "Certificate import failed: $($_.Exception.Message)" -Level WARN }
+    if ($IgnoreCertificateErrors) {
+        Write-Host ""
+        Write-Host "  [WARN] -IgnoreCertificateErrors is active." -ForegroundColor Yellow
+        Write-Host "  Certificate validation for the Login Enterprise appliance is bypassed." -ForegroundColor Yellow
+        Write-Host "  Review your organization's security policies before using this in your environment." -ForegroundColor Yellow
+        Write-Host "  See: https://docs.loginvsi.com/login-enterprise/6.6/nutanix-platform-metrics-integration" -ForegroundColor Yellow
     }
 
     Write-Host ""
@@ -1091,10 +1111,6 @@ try {
     if ($DryRun)                { Write-Log "  Mode:              DRY RUN (nothing uploaded)" -Level WARN }
     if ($script:Interrupted)    { Write-Log "  Status:            Interrupted by user" -Level WARN }
     Write-Host "========================================================================" -ForegroundColor Cyan
-
-    if ($ImportServerCert -and -not $KeepCert -and $script:ImportedCertThumbs.Length -gt 0) {
-        try { Remove-ImportedCertificates -Thumbprints $script:ImportedCertThumbs } catch {}
-    }
 
     try { Stop-Transcript | Out-Null } catch {}
 

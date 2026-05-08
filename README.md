@@ -2,7 +2,7 @@
 
 For setup instructions, parameter reference, and troubleshooting, see the documentation at:
 
-**[https://docs.loginvsi.com/login-enterprise/6.5/nutanix-platform-metrics-integration](https://docs.loginvsi.com/login-enterprise/6.5/nutanix-platform-metrics-integration)**
+**[https://docs.loginvsi.com/login-enterprise/6.6/nutanix-platform-metrics-integration](https://docs.loginvsi.com/login-enterprise/6.6/nutanix-platform-metrics-integration)**
 
 ---
 
