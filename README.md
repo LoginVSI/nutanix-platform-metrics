@@ -10,7 +10,7 @@ For setup instructions, parameter reference, and troubleshooting, see the docume
 
 | File | Version | Description |
 |------|---------|-------------|
-| `Nutanix-LE-PlatformMetrics.ps1` | 2.0.0 | Collector script |
+| `Nutanix-LE-PlatformMetrics.ps1` | 2.1.0 | Collector script |
 | `Get-LEPlatformMetrics.ps1` | 2.0.0 | Retrieval and export script |
 
 ---
