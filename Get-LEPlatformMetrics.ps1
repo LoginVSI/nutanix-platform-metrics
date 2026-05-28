@@ -4,34 +4,20 @@
 
 .DESCRIPTION
     Retrieves Nutanix Platform Metrics data from the Login Enterprise API.
-    Supports single environment ID, per-unit environment IDs, or an array of IDs.
+    Supports a single environment ID or an array of IDs.
     Exports results to timestamped CSV and JSON files for analysis or verification.
 
 .PARAMETER LEApiToken
     REQUIRED. Login Enterprise API token (Configuration access level).
 
 .PARAMETER EnvironmentId
-    Single environment UUID. Use for Power BI / single-environment mode.
-    Mutually exclusive with per-unit params and -EnvironmentIds.
+    Single environment UUID. Use when all metrics are in one environment.
+    Mutually exclusive with -EnvironmentIds.
 
 .PARAMETER EnvironmentIds
-    Array of environment UUIDs. Use this OR -EnvironmentId, not both.
+    Array of environment UUIDs to retrieve from multiple environments in one run.
+    Use this OR -EnvironmentId, not both.
     Example: -EnvironmentIds @("uuid-1","uuid-2")
-
-.PARAMETER EnvironmentIdPercent
-    Environment UUID for percent-unit metrics (multi-environment mode).
-
-.PARAMETER EnvironmentIdIops
-    Environment UUID for iops-unit metrics (multi-environment mode).
-
-.PARAMETER EnvironmentIdMs
-    Environment UUID for ms-unit metrics (multi-environment mode).
-
-.PARAMETER EnvironmentIdKBps
-    Environment UUID for kBps-unit metrics (multi-environment mode).
-
-.PARAMETER EnvironmentIdBytesPerSec
-    Environment UUID for bytesPerSec-unit metrics (VM network, multi-environment mode).
 
 .PARAMETER StartTime
     Start of time range in ISO 8601 Zulu format. e.g. 2026-04-08T00:00:00.000Z
@@ -69,38 +55,32 @@
     policies before using this in your environment.
 
 .EXAMPLE
-    # Last 1 hour, single environment (Power BI mode)
+    # Last 1 hour, single environment
     .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -EnvironmentId "uuid" -BaseUrl "https://my.le.com"
 
 .EXAMPLE
-    # Last 2 hours, multi-environment mode
+    # Last 2 hours, multiple environments
     .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -BaseUrl "https://my.le.com" -LastHours 2 `
-        -EnvironmentIdPercent "uuid-1" -EnvironmentIdIops "uuid-2" -EnvironmentIdMs "uuid-3" -EnvironmentIdKBps "uuid-4"
+        -EnvironmentIds @("uuid-1","uuid-2")
 
 .EXAMPLE
-    # Specific time range, all 5 environments
+    # Specific time range, single environment
     .\Get-LEPlatformMetrics.ps1 -LEApiToken "token" -BaseUrl "https://my.le.com" `
-        -StartTime "2026-04-08T10:00:00.000Z" -EndTime "2026-04-08T11:00:00.000Z" `
-        -EnvironmentIdPercent "uuid-1" -EnvironmentIdIops "uuid-2" `
-        -EnvironmentIdMs "uuid-3" -EnvironmentIdKBps "uuid-4" -EnvironmentIdBytesPerSec "uuid-5"
+        -EnvironmentId "uuid-1" `
+        -StartTime "2026-04-08T10:00:00.000Z" -EndTime "2026-04-08T11:00:00.000Z"
 
 .NOTES
-    Version: 2.0.0 | Author: Login VSI | April 2026
+    Version: 2.2.0 | Author: Login VSI | May 2026
     PowerShell 5.1+ compatible. Tested on PS 5.1. PS7 supported.
-    Companion retrieval script for Nutanix-LE-PlatformMetrics.ps1 v2.0.0
+    Companion retrieval script for Nutanix-LE-PlatformMetrics.ps1 v2.2.0
 #>
 
 param(
     [Parameter(Mandatory = $true)][string]$LEApiToken,
 
-    # Environment ID modes - single, array, or per-unit
+    # Environment ID - single or array
     [Parameter(Mandatory = $false)][string]$EnvironmentId,
     [Parameter(Mandatory = $false)][string[]]$EnvironmentIds,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdPercent,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdIops,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdMs,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdKBps,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdBytesPerSec,
 
     # Time range
     [Parameter(Mandatory = $false)][string]$StartTime,
@@ -123,7 +103,7 @@ param(
 # =====================================================
 # Version and output setup
 # =====================================================
-$ScriptVersion = "2.0.0"
+$ScriptVersion = "2.2.0"
 $Timestamp     = (Get-Date).ToString("yyyyMMdd_HHmmss")
 
 if (-not $OutputDir) { $OutputDir = $PSScriptRoot }
@@ -186,17 +166,10 @@ if ($EnvironmentId -and $EnvironmentIds) {
     } else {
         $ResolvedEnvironmentIds = @($EnvironmentId)
     }
-} else {
-    # Per-unit mode
-    if ($EnvironmentIdPercent)    { $ResolvedEnvironmentIds += $EnvironmentIdPercent }
-    if ($EnvironmentIdIops)       { $ResolvedEnvironmentIds += $EnvironmentIdIops }
-    if ($EnvironmentIdMs)         { $ResolvedEnvironmentIds += $EnvironmentIdMs }
-    if ($EnvironmentIdKBps)       { $ResolvedEnvironmentIds += $EnvironmentIdKBps }
-    if ($EnvironmentIdBytesPerSec){ $ResolvedEnvironmentIds += $EnvironmentIdBytesPerSec }
 }
 
 if ($ResolvedEnvironmentIds.Count -eq 0) {
-    Write-Log "No environment IDs provided. Supply -EnvironmentId, -EnvironmentIds, or per-unit params." -IsError
+    Write-Log "No environment IDs provided. Supply -EnvironmentId or -EnvironmentIds." -IsError
     Write-Host ""
     Write-Host "Example:" -ForegroundColor Yellow
     Write-Host "  .\Get-LEPlatformMetrics.ps1 -LEApiToken `"token`" -EnvironmentId `"your-env-uuid`" -BaseUrl `"https://my.le.com`"" -ForegroundColor Yellow
