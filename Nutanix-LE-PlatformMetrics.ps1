@@ -22,9 +22,7 @@
     - Disk Latency (ms), Disk Bandwidth (kBps)
     - Network RX/TX (bytes/s)
 
-    Environment Modes:
-    - Single:  all metrics -> one environment ID (Power BI connector friendly)
-    - Multi:   metrics split by unit type (percent/iops/ms/kBps) -> separate env IDs (LE web UI friendly)
+    All metrics post to a single Login Enterprise environment ID.
 
 .PARAMETER NutanixPassword
     REQUIRED. Nutanix admin password for both PE and PC.
@@ -51,23 +49,7 @@
     Login Enterprise API version string. Default: v8-preview.
 
 .PARAMETER LEEnvironmentId
-    Single environment ID - all metrics go here (Power BI mode).
-    Mutually exclusive with per-unit environment ID params below.
-
-.PARAMETER EnvironmentIdPercent
-    Environment ID for percent-unit metrics (multi-environment mode).
-
-.PARAMETER EnvironmentIdIops
-    Environment ID for iops-unit metrics (multi-environment mode).
-
-.PARAMETER EnvironmentIdMs
-    Environment ID for ms-unit metrics (multi-environment mode).
-
-.PARAMETER EnvironmentIdKBps
-    Environment ID for kBps-unit metrics (multi-environment mode).
-
-.PARAMETER EnvironmentIdBytesPerSec
-    Environment ID for bytes/s-unit metrics (network, multi-environment mode).
+    Login Enterprise environment UUID. All metrics post here.
 
 .PARAMETER CollectClusterStats
     Collect cluster-level metrics. Default: true.
@@ -123,18 +105,7 @@
     .\Nutanix-LE-PlatformMetrics.ps1 -NutanixPassword "pass" -LEApiToken "token" -RunOnce
 
 .EXAMPLE
-    # Cluster + host + VM stats, multi-environment mode
-    .\Nutanix-LE-PlatformMetrics.ps1 `
-        -NutanixPassword "pass" `
-        -LEApiToken "token" `
-        -PrismCentralHost "10.30.15.203" `
-        -ClusterExtId "00064ed1-aeae-074e-4209-00505696e0b5" `
-        -CollectHostStats `
-        -CollectVmStats `
-        -RunOnce
-
-.EXAMPLE
-    # Single environment mode (Power BI connector)
+    # Cluster + host + VM stats
     .\Nutanix-LE-PlatformMetrics.ps1 `
         -NutanixPassword "pass" `
         -LEApiToken "token" `
@@ -144,10 +115,10 @@
         -CollectHostStats -CollectVmStats -RunOnce
 
 .NOTES
-    Version: 2.1.0 | Author: Login VSI | May 2026
+    Version: 2.2.0 | Author: Login VSI | May 2026
     PowerShell 5.1+ compatible. No admin required.
     PC v4 API version negotiation: automatic. PC < 7.5 defaults to v4.0.
-    Cluster stats: PC v4 preferred, PE v2 fallback.
+    Cluster stats: PC v4 preferred, PE v2 fallback (PE v2 deprecation pending per Nutanix).
 #>
 
 [CmdletBinding()]
@@ -164,13 +135,8 @@ param(
     [Parameter(Mandatory = $false)][string]$LEApplianceUrl,
     [Parameter(Mandatory = $false)][string]$LEApiVersion,
 
-    # Environment mode - single OR multi (mutually exclusive)
+    # Environment ID - all metrics post here
     [Parameter(Mandatory = $false)][string]$LEEnvironmentId,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdPercent,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdIops,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdMs,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdKBps,
-    [Parameter(Mandatory = $false)][string]$EnvironmentIdBytesPerSec,
 
     # Collection scope
     [Parameter(Mandatory = $false)][switch]$CollectClusterStats,
@@ -238,18 +204,8 @@ $script:Config = @{
     LEApplianceUrl           = "https://your-le-appliance.example.com"
     LEApiVersion             = "v8-preview"
 
-    # Environment mode: "single" or "multi"
-    # Single: all metrics -> LEEnvironmentId
-    # Multi: metrics split by unit -> per-unit IDs below
-    EnvironmentMode          = "multi"
-    LEEnvironmentId          = "00000000-0000-0000-0000-000000000000"  # single mode
-    EnvironmentIds           = @{
-        "percent"    = "00000000-0000-0000-0000-000000000001"
-        "iops"       = "00000000-0000-0000-0000-000000000002"
-        "ms"         = "00000000-0000-0000-0000-000000000003"
-        "kBps"       = "00000000-0000-0000-0000-000000000004"
-        "bytesPerSec"= "00000000-0000-0000-0000-000000000005"
-    }
+    # All metrics post to this single environment ID
+    LEEnvironmentId          = "00000000-0000-0000-0000-000000000000"
 
     # Collection scope defaults - cluster always on; host/VM need PC
     CollectClusterStats      = $true
@@ -294,18 +250,7 @@ if ($CollectHostStats)        { $script:Config.CollectHostStats        = $true }
 if ($CollectVmStats)          { $script:Config.CollectVmStats          = $true }
 if ($VmFilter)                { $script:Config.VmFilter = @($VmFilter -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 
-# Environment mode resolution
-if ($LEEnvironmentId) {
-    $script:Config.EnvironmentMode  = "single"
-    $script:Config.LEEnvironmentId  = $LEEnvironmentId
-} elseif ($EnvironmentIdPercent -or $EnvironmentIdIops -or $EnvironmentIdMs -or $EnvironmentIdKBps) {
-    $script:Config.EnvironmentMode  = "multi"
-    if ($EnvironmentIdPercent)    { $script:Config.EnvironmentIds["percent"]     = $EnvironmentIdPercent }
-    if ($EnvironmentIdIops)       { $script:Config.EnvironmentIds["iops"]        = $EnvironmentIdIops }
-    if ($EnvironmentIdMs)         { $script:Config.EnvironmentIds["ms"]          = $EnvironmentIdMs }
-    if ($EnvironmentIdKBps)       { $script:Config.EnvironmentIds["kBps"]        = $EnvironmentIdKBps }
-    if ($EnvironmentIdBytesPerSec){ $script:Config.EnvironmentIds["bytesPerSec"] = $EnvironmentIdBytesPerSec }
-}
+if ($LEEnvironmentId)         { $script:Config.LEEnvironmentId         = $LEEnvironmentId }
 
 # Store credentials in config (never in defaults above)
 $script:Config.NutanixPassword = $NutanixPassword
@@ -393,7 +338,7 @@ $script:VmMetricMap = @(
 # ============================================================
 #  SCRIPT STATE
 # ============================================================
-$script:Version             = "2.1.0"
+$script:Version             = "2.2.0"
 $script:StartTime           = Get-Date
 $script:Timestamp           = $script:StartTime.ToString('yyyyMMdd_HHmmss')
 $script:LogFile             = Join-Path $script:Config.LogDir "Nutanix-LE-Metrics_$($script:Timestamp).log"
@@ -452,10 +397,9 @@ function Convert-MetricValue { param([object]$RawValue, [string]$ConversionType)
     }
 }
 
-function Get-EnvironmentId { param([string]$Unit)
-    if ($script:Config.EnvironmentMode -eq "single") { return $script:Config.LEEnvironmentId }
-    $envId = $script:Config.EnvironmentIds[$Unit]
-    if (-not $envId) { Write-Log "No environment ID configured for unit: $Unit" -Level WARN }
+function Get-EnvironmentId {
+    $envId = $script:Config.LEEnvironmentId
+    if (-not $envId -or $envId -match "^0{8}-") { Write-Log "LEEnvironmentId not configured" -Level WARN }
     return $envId
 }
 
@@ -741,7 +685,7 @@ function Get-VmStats { param([hashtable]$Headers, $Session, [string]$ApiVer, [st
 function Build-MetricPayload {
     param([string]$MetricId, [string]$DisplayName, [string]$Unit, [double]$Value,
           [string]$Instance, [string]$ComponentType, [hashtable]$CustomTags)
-    $envId = Get-EnvironmentId -Unit $Unit
+    $envId = Get-EnvironmentId
     if (-not $envId) { return $null }
     return @{
         metricId      = $MetricId
@@ -886,16 +830,9 @@ function Test-Preflight { param([hashtable]$PeHeaders, [hashtable]$PcHeaders, $P
         if (-not $val -or $val -like "*example.com*") { Write-Log "  [$urlKey] not configured" -Level ERROR; $ok = $false }
     }
 
-    # Validate environment IDs
-    if ($script:Config.EnvironmentMode -eq "single") {
-        $eid = $script:Config.LEEnvironmentId
-        if (-not $eid -or $eid -match "^0{8}-") { Write-Log "  LEEnvironmentId not configured" -Level ERROR; $ok = $false }
-    } else {
-        foreach ($u in @("percent","iops","ms","kBps")) {
-            $eid = $script:Config.EnvironmentIds[$u]
-            if (-not $eid -or $eid -match "^0{8}-") { Write-Log "  EnvironmentId for [$u] not configured" -Level WARN }
-        }
-    }
+    # Validate environment ID
+    $eid = $script:Config.LEEnvironmentId
+    if (-not $eid -or $eid -match "^0{8}-") { Write-Log "  LEEnvironmentId not configured" -Level ERROR; $ok = $false }
 
     # Validate PC config if host/VM collection enabled
     if ($script:Config.CollectHostStats -or $script:Config.CollectVmStats) {
@@ -933,6 +870,7 @@ function Test-Preflight { param([hashtable]$PeHeaders, [hashtable]$PcHeaders, $P
             }
         } else {
             Write-Log "  Cluster stats: Prism Central not configured or unreachable - using Prism Element v2" -Level INFO
+            Write-Log "  NOTE: Nutanix has announced Prism Element v2 API deprecation. Configure Prism Central to use the v4 API path and avoid disruption when v2 is retired." -Level WARN
         }
 
         # Fall back to PE v2 if PC v4 didn't work
@@ -986,12 +924,7 @@ try {
     Write-Log "  Cluster ExtId:         $(if ($script:Config.ClusterExtId) { $script:Config.ClusterExtId } else { '(not set)' })"
     Write-Log "  LE Appliance:          $($script:Config.LEApplianceUrl)"
     Write-Log "  LE API Version:        $($script:Config.LEApiVersion)"
-    Write-Log "  Environment Mode:      $($script:Config.EnvironmentMode)"
-    if ($script:Config.EnvironmentMode -eq "single") {
-        Write-Log "  Environment ID:        $($script:Config.LEEnvironmentId)"
-    } else {
-        foreach ($u in $script:Config.EnvironmentIds.Keys) { Write-Log "  Env [$u]:          $($script:Config.EnvironmentIds[$u])" }
-    }
+    Write-Log "  Environment ID:        $($script:Config.LEEnvironmentId)"
     Write-Log "  Collect Cluster Stats: $($script:Config.CollectClusterStats)"
     Write-Log "  Cluster Stats Source:  $($script:ClusterStatsSource) (determined at preflight)"
     Write-Log "  Collect Host Stats:    $($script:Config.CollectHostStats)"
@@ -1066,6 +999,7 @@ try {
                     $clusterData = Get-ClusterStatsFromPC -Headers $pcHeaders -Session $pcSession -ApiVer $script:NegotiatedApiVersion
                     if (-not $clusterData) {
                         Write-Log "  PC v4 cluster stats returned no data - falling back to PE v2 this iteration" -Level WARN
+                        Write-Log "  NOTE: Nutanix has announced Prism Element v2 API deprecation. Ensure Prism Central is reachable to use the v4 path." -Level WARN
                         $clusterData = Get-ClusterStatsFromPE -Headers $peHeaders
                     }
                 } else {
