@@ -6,7 +6,7 @@
     Polls Nutanix cluster, host, and VM statistics from Prism Central v4 API
     and uploads them to Login Enterprise Platform Metrics API.
 
-    Cluster-Level Metrics (PC v4 preferred, PE v2 fallback):
+    Cluster-Level Metrics (via PC v4):
     - CPU Usage (%), Memory Usage (%)
     - Storage IOPS (total, read, write)
     - Storage Latency (avg, read, write) in ms
@@ -25,16 +25,13 @@
     All metrics post to a single Login Enterprise environment ID.
 
 .PARAMETER NutanixPassword
-    REQUIRED. Nutanix admin password for both PE and PC.
+    REQUIRED. Nutanix admin password for Prism Central.
 
 .PARAMETER LEApiToken
     REQUIRED. Login Enterprise API token with Configuration access.
 
-.PARAMETER NutanixHost
-    Prism Element IP or FQDN. Default: value in script config.
-
 .PARAMETER PrismCentralHost
-    Prism Central IP or FQDN. Required for host/VM metrics.
+    Prism Central IP or FQDN. Required for all metric collection.
 
 .PARAMETER NutanixUser
     Nutanix admin username. Default: admin.
@@ -52,7 +49,7 @@
     Login Enterprise environment UUID. All metrics post here.
 
 .PARAMETER CollectClusterStats
-    Collect cluster-level metrics. Default: true.
+    Collect cluster-level metrics via PC v4. Requires PrismCentralHost + ClusterExtId.
 
 .PARAMETER CollectHostStats
     Collect host-level metrics via PC v4. Requires PrismCentralHost + ClusterExtId.
@@ -115,10 +112,10 @@
         -CollectHostStats -CollectVmStats -RunOnce
 
 .NOTES
-    Version: 2.2.0 | Author: Login VSI | May 2026
+    Version: 2.3.0 | Author: Login VSI | June 2026
     PowerShell 5.1+ compatible. No admin required.
     PC v4 API version negotiation: automatic. PC < 7.5 defaults to v4.0.
-    Cluster stats: PC v4 preferred, PE v2 fallback (PE v2 deprecation pending per Nutanix).
+    All metric collection via Prism Central v4. Prism Element v2 no longer used.
 #>
 
 [CmdletBinding()]
@@ -128,7 +125,6 @@ param(
     [Parameter(Mandatory = $false)][string]$LEApiToken,
 
     # Connection targets
-    [Parameter(Mandatory = $false)][string]$NutanixHost,
     [Parameter(Mandatory = $false)][string]$PrismCentralHost,
     [Parameter(Mandatory = $false)][string]$NutanixUser,
     [Parameter(Mandatory = $false)][string]$ClusterExtId,
@@ -197,8 +193,7 @@ if (-not $NutanixPassword) {
 #  DEFAULTS - override any of these via command-line params
 # ============================================================
 $script:Config = @{
-    NutanixHost              = "your-prism-element.example.com"
-    PrismCentralHost         = ""                          # set for PC host/VM stats
+    PrismCentralHost         = ""                          # required for all metric collection
     NutanixUser              = "admin"
     ClusterExtId             = ""                          # required for PC v4 calls
     LEApplianceUrl           = "https://your-le-appliance.example.com"
@@ -207,7 +202,7 @@ $script:Config = @{
     # All metrics post to this single environment ID
     LEEnvironmentId          = "00000000-0000-0000-0000-000000000000"
 
-    # Collection scope defaults - cluster always on; host/VM need PC
+    # Collection scope defaults - all collection requires PC
     CollectClusterStats      = $true
     CollectHostStats         = $false
     CollectVmStats           = $false
@@ -231,7 +226,6 @@ $script:Config = @{
 # ============================================================
 #  APPLY COMMAND-LINE OVERRIDES
 # ============================================================
-if ($NutanixHost)             { $script:Config.NutanixHost             = $NutanixHost }
 if ($PrismCentralHost)        { $script:Config.PrismCentralHost        = $PrismCentralHost }
 if ($NutanixUser)             { $script:Config.NutanixUser             = $NutanixUser }
 if ($ClusterExtId)            { $script:Config.ClusterExtId            = $ClusterExtId }
@@ -260,23 +254,7 @@ $script:Config.LEApiToken      = $LEApiToken
 #  METRIC DEFINITIONS
 # ============================================================
 
-# Cluster metrics - PE v2 field names (fallback path)
-$script:ClusterMetricsPEv2 = @(
-    @{ NutanixStat="hypervisor_cpu_usage_ppm";            MetricId="nutanix.cluster.cpu.usage";              DisplayName="Cluster CPU Usage";               Unit="percent";    ComponentType="cluster"; Conversion="ppm_to_percent" },
-    @{ NutanixStat="hypervisor_memory_usage_ppm";         MetricId="nutanix.cluster.memory.usage";           DisplayName="Cluster Memory Usage";            Unit="percent";    ComponentType="cluster"; Conversion="ppm_to_percent" },
-    @{ NutanixStat="controller_num_iops";                 MetricId="nutanix.cluster.storage.iops.total";     DisplayName="Cluster Storage IOPS (Total)";    Unit="iops";       ComponentType="cluster"; Conversion="none" },
-    @{ NutanixStat="controller_num_read_iops";            MetricId="nutanix.cluster.storage.iops.read";      DisplayName="Cluster Storage IOPS (Read)";     Unit="iops";       ComponentType="cluster"; Conversion="none" },
-    @{ NutanixStat="controller_num_write_iops";           MetricId="nutanix.cluster.storage.iops.write";     DisplayName="Cluster Storage IOPS (Write)";    Unit="iops";       ComponentType="cluster"; Conversion="none" },
-    @{ NutanixStat="controller_avg_io_latency_usecs";     MetricId="nutanix.cluster.storage.latency.avg";    DisplayName="Cluster Storage Latency (Avg)";   Unit="ms";         ComponentType="cluster"; Conversion="usecs_to_ms" },
-    @{ NutanixStat="controller_avg_read_io_latency_usecs";MetricId="nutanix.cluster.storage.latency.read";   DisplayName="Cluster Storage Latency (Read)";  Unit="ms";         ComponentType="cluster"; Conversion="usecs_to_ms" },
-    @{ NutanixStat="controller_avg_write_io_latency_usecs";MetricId="nutanix.cluster.storage.latency.write"; DisplayName="Cluster Storage Latency (Write)"; Unit="ms";         ComponentType="cluster"; Conversion="usecs_to_ms" },
-    @{ NutanixStat="controller_io_bandwidth_kBps";        MetricId="nutanix.cluster.storage.bandwidth.total";DisplayName="Cluster IO Bandwidth (Total)";    Unit="kBps";       ComponentType="cluster"; Conversion="none" },
-    @{ NutanixStat="controller_read_io_bandwidth_kBps";   MetricId="nutanix.cluster.storage.bandwidth.read"; DisplayName="Cluster IO Bandwidth (Read)";     Unit="kBps";       ComponentType="cluster"; Conversion="none" },
-    @{ NutanixStat="controller_write_io_bandwidth_kBps";  MetricId="nutanix.cluster.storage.bandwidth.write";DisplayName="Cluster IO Bandwidth (Write)";    Unit="kBps";       ComponentType="cluster"; Conversion="none" }
-)
-
-# Cluster metrics - PC v4 field names (preferred path)
-# Same MetricIds as PE v2 so data is directly comparable regardless of which path fired.
+# Cluster metrics - PC v4 field names
 $script:ClusterMetricsPCv4 = @(
     @{ NutanixStat="hypervisorCpuUsagePpm";               MetricId="nutanix.cluster.cpu.usage";              DisplayName="Cluster CPU Usage";               Unit="percent";    ComponentType="cluster"; Conversion="ppm_to_percent" },
     @{ NutanixStat="aggregateHypervisorMemoryUsagePpm";   MetricId="nutanix.cluster.memory.usage";           DisplayName="Cluster Memory Usage";            Unit="percent";    ComponentType="cluster"; Conversion="ppm_to_percent" },
@@ -290,9 +268,6 @@ $script:ClusterMetricsPCv4 = @(
     @{ NutanixStat="controllerReadIoBandwidthKbps";       MetricId="nutanix.cluster.storage.bandwidth.read"; DisplayName="Cluster IO Bandwidth (Read)";     Unit="kBps";       ComponentType="cluster"; Conversion="none" },
     @{ NutanixStat="controllerWriteIoBandwidthKbps";      MetricId="nutanix.cluster.storage.bandwidth.write";DisplayName="Cluster IO Bandwidth (Write)";    Unit="kBps";       ComponentType="cluster"; Conversion="none" }
 )
-
-# Keep $script:ClusterMetrics pointing at PE v2 for any code that hasn't been updated yet
-$script:ClusterMetrics = $script:ClusterMetricsPEv2
 
 # Host metrics - sourced from PC v4 clustermgmt API
 # select keys match clustermgmt v4 API spec (no stats/ prefix)
@@ -338,7 +313,7 @@ $script:VmMetricMap = @(
 # ============================================================
 #  SCRIPT STATE
 # ============================================================
-$script:Version             = "2.2.0"
+$script:Version             = "2.3.0"
 $script:StartTime           = Get-Date
 $script:Timestamp           = $script:StartTime.ToString('yyyyMMdd_HHmmss')
 $script:LogFile             = Join-Path $script:Config.LogDir "Nutanix-LE-Metrics_$($script:Timestamp).log"
@@ -352,7 +327,6 @@ $script:NegotiatedApiVersion= "v4.0"
 $script:ExitCode            = 0
 $script:Interrupted         = $false
 $script:PcReachable         = $false
-$script:ClusterStatsSource  = "PE_v2"   # set to "PC_v4" during preflight if PC cluster stats succeed
 
 # ============================================================
 #  HELPERS
@@ -423,7 +397,7 @@ function Get-LatestSeriesValue { param($Series)
 #  TLS / CERT HELPERS
 # ============================================================
 
-# Nutanix (Prism Element and Prism Central) always uses self-signed certificates.
+# Nutanix (Prism Central) always uses self-signed certificates.
 # Certificate validation is bypassed unconditionally for all Nutanix API calls.
 # This is expected behavior - Nutanix does not require customers to replace the
 # default Prism certificate for API access.
@@ -593,23 +567,8 @@ function Get-AdjustedTimestamp { return ([DateTimeOffset]::UtcNow.Add($script:Ti
 # ============================================================
 #  NUTANIX DATA COLLECTION
 # ============================================================
-function Get-ClusterStatsFromPE { param([hashtable]$Headers)
-    try {
-        $uri    = "https://$($script:Config.NutanixHost):9440/PrismGateway/services/rest/v2.0/cluster/"
-        $params = @{ Uri = $uri; Method = "GET"; Headers = $Headers; ContentType = "application/json"; TimeoutSec = $script:Config.ApiTimeoutSec }
-        if ($PSVersionTable.PSVersion.Major -ge 7) { $params.SkipCertificateCheck = $true }
-        $resp   = Invoke-RestMethod @params
-        if ($resp -and $resp.stats) {
-            return @{ ClusterName = $resp.name; ClusterUuid = $resp.uuid; Stats = $resp.stats; Source = "PE_v2" }
-        }
-        Write-Log "No stats in PE v2 response" -Level WARN
-        return $null
-    } catch { Write-Log "PE v2 cluster stats failed: $($_.Exception.Message)" -Level ERROR; return $null }
-}
-
 function Get-ClusterStatsFromPC { param([hashtable]$Headers, $Session, [string]$ApiVer)
     # Collects cluster-level stats via Prism Central v4 clustermgmt API.
-    # Returns the same hashtable shape as Get-ClusterStatsFromPE for drop-in compatibility.
     try {
         $now       = [DateTimeOffset]::UtcNow
         $startTime = $now.AddSeconds(-60).AddSeconds(-30).ToString("yyyy-MM-ddTHH:mm:ssZ")  # -30s clock skew offset
@@ -703,9 +662,8 @@ function Build-MetricPayload {
 
 function Convert-ClusterStatsToMetrics { param([hashtable]$ClusterData)
     $metrics = @()
-    $tags    = @{ cluster_uuid = $ClusterData.ClusterUuid; cluster_name = $ClusterData.ClusterName; source = $ClusterData.Source }
-    $map     = if ($ClusterData.Source -eq "PC_v4") { $script:ClusterMetricsPCv4 } else { $script:ClusterMetricsPEv2 }
-    foreach ($m in $map) {
+    $tags    = @{ cluster_uuid = $ClusterData.ClusterUuid; cluster_name = $ClusterData.ClusterName }
+    foreach ($m in $script:ClusterMetricsPCv4) {
         $raw = $ClusterData.Stats.($m.NutanixStat)
         $val = Convert-MetricValue -RawValue $raw -ConversionType $m.Conversion
         if ($null -ne $val) {
@@ -820,70 +778,42 @@ function Send-ToLEPlatformMetrics { param([array]$Metrics)
 # ============================================================
 #  PREFLIGHT
 # ============================================================
-function Test-Preflight { param([hashtable]$PeHeaders, [hashtable]$PcHeaders, $PcSession)
+function Test-Preflight { param([hashtable]$PcHeaders, $PcSession)
     Write-Log "Running pre-flight checks..." -Level INFO
     $ok = $true
 
-    # Validate URLs
-    foreach ($urlKey in @("NutanixHost","LEApplianceUrl")) {
+    # Validate required config
+    foreach ($urlKey in @("PrismCentralHost","LEApplianceUrl")) {
         $val = $script:Config[$urlKey]
         if (-not $val -or $val -like "*example.com*") { Write-Log "  [$urlKey] not configured" -Level ERROR; $ok = $false }
     }
+    if (-not $script:Config.ClusterExtId) { Write-Log "  ClusterExtId not configured (required for all collection)" -Level ERROR; $ok = $false }
 
     # Validate environment ID
     $eid = $script:Config.LEEnvironmentId
     if (-not $eid -or $eid -match "^0{8}-") { Write-Log "  LEEnvironmentId not configured" -Level ERROR; $ok = $false }
 
-    # Validate PC config if host/VM collection enabled
-    if ($script:Config.CollectHostStats -or $script:Config.CollectVmStats) {
-        if (-not $script:Config.PrismCentralHost) { Write-Log "  PrismCentralHost required for host/VM stats" -Level ERROR; $ok = $false }
-        if (-not $script:Config.ClusterExtId)     { Write-Log "  ClusterExtId required for host/VM stats" -Level ERROR; $ok = $false }
-    }
-
-    # Test PC connectivity (always try if PrismCentralHost is set)
-    if ($script:Config.PrismCentralHost -and $ok) {
-        try {
-            $pcTest = Invoke-NutanixApi -Uri "https://$($script:Config.PrismCentralHost):9440/api/clustermgmt/v4.0/config/clusters" -Headers $PcHeaders -Session $PcSession -TimeoutSec $script:Config.ApiTimeoutSec
-            if ($pcTest.data) { Write-Log "  Prism Central: connected at $($script:Config.PrismCentralHost)" -Level SUCCESS; $script:PcReachable = $true }
-            else              { Write-Log "  Prism Central: connected but returned no cluster data" -Level WARN; $script:PcReachable = $true }
-        } catch {
-            Write-Log "  Prism Central: connection failed at $($script:Config.PrismCentralHost) - host/VM stats will be skipped" -Level WARN
-        }
-    }
-
     if (-not $ok) { return $false }
 
-    # Cluster stats preflight: try PC v4 first, fall back to PE v2
+    # Test PC connectivity
+    try {
+        $pcTest = Invoke-NutanixApi -Uri "https://$($script:Config.PrismCentralHost):9440/api/clustermgmt/v4.0/config/clusters" -Headers $PcHeaders -Session $PcSession -TimeoutSec $script:Config.ApiTimeoutSec
+        if ($pcTest.data) { Write-Log "  Prism Central: connected at $($script:Config.PrismCentralHost)" -Level SUCCESS; $script:PcReachable = $true }
+        else              { Write-Log "  Prism Central: connected but returned no cluster data" -Level WARN; $script:PcReachable = $true }
+    } catch {
+        Write-Log "  Prism Central: connection failed at $($script:Config.PrismCentralHost)" -Level ERROR
+        return $false
+    }
+
+    # Cluster stats preflight via PC v4
     if ($script:Config.CollectClusterStats) {
-        $pcClusterOk = $false
-
-        # Try PC v4 cluster stats if PC is configured and reachable and ClusterExtId is set
-        if ($script:Config.PrismCentralHost -and $script:PcReachable -and $script:Config.ClusterExtId) {
-            Write-Log "  Cluster stats: trying Prism Central v4..." -Level INFO
-            $pcData = Get-ClusterStatsFromPC -Headers $PcHeaders -Session $PcSession -ApiVer $script:NegotiatedApiVersion
-            if ($pcData) {
-                Write-Log "  Cluster stats: Prism Central v4 OK - cluster '$($pcData.ClusterName)'" -Level SUCCESS
-                $script:ClusterStatsSource = "PC_v4"
-                $pcClusterOk = $true
-            } else {
-                Write-Log "  Cluster stats: Prism Central v4 returned no data - falling back to Prism Element v2" -Level WARN
-            }
+        Write-Log "  Cluster stats: trying Prism Central v4..." -Level INFO
+        $pcData = Get-ClusterStatsFromPC -Headers $PcHeaders -Session $PcSession -ApiVer $script:NegotiatedApiVersion
+        if ($pcData) {
+            Write-Log "  Cluster stats: Prism Central v4 OK - cluster '$($pcData.ClusterName)'" -Level SUCCESS
         } else {
-            Write-Log "  Cluster stats: Prism Central not configured or unreachable - using Prism Element v2" -Level INFO
-            Write-Log "  NOTE: Nutanix has announced Prism Element v2 API deprecation. Configure Prism Central to use the v4 API path and avoid disruption when v2 is retired." -Level WARN
-        }
-
-        # Fall back to PE v2 if PC v4 didn't work
-        if (-not $pcClusterOk) {
-            Write-Log "  Cluster stats: trying Prism Element v2..." -Level INFO
-            $peData = Get-ClusterStatsFromPE -Headers $PeHeaders
-            if ($peData) {
-                Write-Log "  Cluster stats: Prism Element v2 OK - cluster '$($peData.ClusterName)'" -Level SUCCESS
-                $script:ClusterStatsSource = "PE_v2"
-            } else {
-                Write-Log "  Cluster stats: Prism Element v2 connection failed" -Level ERROR
-                $ok = $false
-            }
+            Write-Log "  Cluster stats: Prism Central v4 returned no data" -Level ERROR
+            $ok = $false
         }
     }
 
@@ -918,15 +848,13 @@ try {
 
     # Startup config dump
     Write-Log "Configuration:"
-    Write-Log "  Nutanix PE Host:       $($script:Config.NutanixHost)"
+    Write-Log "  Prism Central Host:    $($script:Config.PrismCentralHost)"
     Write-Log "  Nutanix User:          $($script:Config.NutanixUser)"
-    Write-Log "  Prism Central Host:    $(if ($script:Config.PrismCentralHost) { $script:Config.PrismCentralHost } else { '(not set)' })"
     Write-Log "  Cluster ExtId:         $(if ($script:Config.ClusterExtId) { $script:Config.ClusterExtId } else { '(not set)' })"
     Write-Log "  LE Appliance:          $($script:Config.LEApplianceUrl)"
     Write-Log "  LE API Version:        $($script:Config.LEApiVersion)"
     Write-Log "  Environment ID:        $($script:Config.LEEnvironmentId)"
     Write-Log "  Collect Cluster Stats: $($script:Config.CollectClusterStats)"
-    Write-Log "  Cluster Stats Source:  $($script:ClusterStatsSource) (determined at preflight)"
     Write-Log "  Collect Host Stats:    $($script:Config.CollectHostStats)"
     Write-Log "  Collect VM Stats:      $($script:Config.CollectVmStats)"
     if ($script:Config.VmFilter.Count -gt 0) {
@@ -945,23 +873,20 @@ try {
     Write-Host ""
 
     # Auth headers
-    $peHeaders = Build-NutanixHeaders -User $script:Config.NutanixUser -Password $script:Config.NutanixPassword
     $pcHeaders = Build-NutanixHeaders -User $script:Config.NutanixUser -Password $script:Config.NutanixPassword
     $pcSession = Build-PcSession
 
     # Pre-flight
-    if (-not (Test-Preflight -PeHeaders $peHeaders -PcHeaders $pcHeaders -PcSession $pcSession)) {
+    if (-not (Test-Preflight -PcHeaders $pcHeaders -PcSession $pcSession)) {
         Write-Log "Pre-flight failed - exiting" -Level ERROR
         $script:ExitCode = 1
         throw "Pre-flight validation failed"
     }
     Write-Host ""
 
-    # Version negotiation (only if PC is configured and reachable)
-    if ($script:Config.PrismCentralHost -and $script:PcReachable) {
+    # Version negotiation
+    if ($script:PcReachable) {
         $script:NegotiatedApiVersion = Invoke-ApiVersionNegotiation -Headers $pcHeaders -Session $pcSession
-    } elseif ($script:Config.PrismCentralHost -and -not $script:PcReachable) {
-        Write-Log "Skipping version negotiation - PC not reachable" -Level WARN
     }
     Write-Host ""
 
@@ -991,23 +916,11 @@ try {
         $allMetrics = @()
 
         try {
-            # CLUSTER STATS (PC v4 preferred, PE v2 fallback)
+            # CLUSTER STATS (PC v4)
             if ($script:Config.CollectClusterStats) {
-                $clusterData = $null
-                if ($script:ClusterStatsSource -eq "PC_v4") {
-                    Write-Log "  Collecting cluster stats (PC v4)..." -Level VERBOSE
-                    $clusterData = Get-ClusterStatsFromPC -Headers $pcHeaders -Session $pcSession -ApiVer $script:NegotiatedApiVersion
-                    if (-not $clusterData) {
-                        Write-Log "  PC v4 cluster stats returned no data - falling back to PE v2 this iteration" -Level WARN
-                        Write-Log "  NOTE: Nutanix has announced Prism Element v2 API deprecation. Ensure Prism Central is reachable to use the v4 path." -Level WARN
-                        $clusterData = Get-ClusterStatsFromPE -Headers $peHeaders
-                    }
-                } else {
-                    Write-Log "  Collecting cluster stats (PE v2)..." -Level VERBOSE
-                    $clusterData = Get-ClusterStatsFromPE -Headers $peHeaders
-                }
+                Write-Log "  Collecting cluster stats (PC v4)..." -Level VERBOSE
+                $clusterData = Get-ClusterStatsFromPC -Headers $pcHeaders -Session $pcSession -ApiVer $script:NegotiatedApiVersion
                 if ($clusterData) {
-                    Write-Log "  Cluster source: $($clusterData.Source)" -Level VERBOSE
                     if ($script:Config.SaveRawResponse) {
                         $rawFile = Join-Path $script:Config.LogDir "NutanixCluster_$($script:Timestamp)_$($iteration.ToString('D4')).json"
                         $clusterData.Stats | ConvertTo-Json -Depth 10 | Out-File $rawFile -Encoding UTF8
@@ -1016,12 +929,12 @@ try {
                     $allMetrics += $clusterMetrics
                     Write-Log "  Cluster: $($clusterMetrics.Count) metrics" -Level DEBUG
                 } else {
-                    Write-Log "  Cluster stats unavailable from both PC v4 and PE v2" -Level WARN
+                    Write-Log "  Cluster stats unavailable from Prism Central" -Level WARN
                 }
             }
 
             # HOST STATS (PC v4)
-            if ($script:Config.CollectHostStats -and $script:Config.PrismCentralHost -and $script:PcReachable) {
+            if ($script:Config.CollectHostStats -and $script:PcReachable) {
                 Write-Log "  Collecting host stats (PC v4 $($script:NegotiatedApiVersion))..." -Level VERBOSE
                 $clusterName = if ($clusterData) { $clusterData.ClusterName } else { $script:Config.ClusterExtId }
                 $clusterUuid = if ($clusterData) { $clusterData.ClusterUuid } else { $script:Config.ClusterExtId }
@@ -1042,7 +955,7 @@ try {
             }
 
             # VM STATS (PC v4)
-            if ($script:Config.CollectVmStats -and $script:Config.PrismCentralHost -and $script:PcReachable) {
+            if ($script:Config.CollectVmStats -and $script:PcReachable) {
                 Write-Log "  Collecting VM stats (PC v4 $($script:NegotiatedApiVersion))..." -Level VERBOSE
                 $clusterName = if ($clusterData) { $clusterData.ClusterName } else { $script:Config.ClusterExtId }
                 $clusterUuid = if ($clusterData) { $clusterData.ClusterUuid } else { $script:Config.ClusterExtId }
