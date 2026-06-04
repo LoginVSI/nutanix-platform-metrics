@@ -313,7 +313,7 @@ $script:VmMetricMap = @(
 # ============================================================
 #  SCRIPT STATE
 # ============================================================
-$script:Version             = "2.3.0"
+$script:Version             = "2.3.1"
 $script:StartTime           = Get-Date
 $script:Timestamp           = $script:StartTime.ToString('yyyyMMdd_HHmmss')
 $script:LogFile             = Join-Path $script:Config.LogDir "Nutanix-LE-Metrics_$($script:Timestamp).log"
@@ -571,7 +571,7 @@ function Get-ClusterStatsFromPC { param([hashtable]$Headers, $Session, [string]$
     # Collects cluster-level stats via Prism Central v4 clustermgmt API.
     try {
         $now       = [DateTimeOffset]::UtcNow
-        $startTime = $now.AddSeconds(-60).AddSeconds(-30).ToString("yyyy-MM-ddTHH:mm:ssZ")  # -30s clock skew offset
+        $startTime = $now.AddSeconds(-300).AddSeconds(-30).ToString("yyyy-MM-ddTHH:mm:ssZ")  # 5 min window + 30s clock skew offset
         $endTime   = $now.AddSeconds(-30).ToString("yyyy-MM-ddTHH:mm:ssZ")
         $select    = "hypervisorCpuUsagePpm,aggregateHypervisorMemoryUsagePpm," +
                      "controllerNumIops,controllerNumReadIops,controllerNumWriteIops," +
@@ -584,12 +584,14 @@ function Get-ClusterStatsFromPC { param([hashtable]$Headers, $Session, [string]$
         $d         = $resp.data
         $name      = if ($d.name)  { $d.name }  else { $script:Config.ClusterExtId }
         $uuid      = if ($d.extId) { $d.extId } else { $script:Config.ClusterExtId }
-        $stats     = $d.stats
-        if (-not $stats) { Write-Log "PC v4 cluster stats: no stats block in response" -Level WARN; return $null }
+        # PC 7.3 returns stats flat on data; newer PC versions nest them under data.stats
+        $statsObj  = if ($d.stats) { $d.stats } else { $d }
+        if (-not $statsObj) { Write-Log "PC v4 cluster stats: no stats data in response" -Level WARN; return $null }
         # Flatten series arrays to their latest value so Convert-ClusterStatsToMetrics works unchanged
         $flat = @{}
-        foreach ($key in ($stats | Get-Member -MemberType NoteProperty).Name) {
-            $series = $stats.$key
+        foreach ($key in ($statsObj | Get-Member -MemberType NoteProperty).Name) {
+            if ($key -like '$*') { continue }  # skip reserved fields like $reserved, $objectType
+            $series = $statsObj.$key
             if ($series -is [array] -and $series.Count -gt 0) { $flat[$key] = $series[0].value }
             elseif ($null -ne $series)                         { $flat[$key] = $series }
         }
