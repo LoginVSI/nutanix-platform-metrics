@@ -70,7 +70,7 @@
         -StartTime "2026-04-08T10:00:00.000Z" -EndTime "2026-04-08T11:00:00.000Z"
 
 .NOTES
-    Version: 2.2.0 | Author: Login VSI | May 2026
+    Version: 2.2.1 | Author: Login VSI | June 2026
     PowerShell 5.1+ compatible. Tested on PS 5.1. PS7 supported.
     Companion retrieval script for Nutanix-LE-PlatformMetrics.ps1 v2.2.0
 #>
@@ -103,7 +103,7 @@ param(
 # =====================================================
 # Version and output setup
 # =====================================================
-$ScriptVersion = "2.2.0"
+$ScriptVersion = "2.2.1"
 $Timestamp     = (Get-Date).ToString("yyyyMMdd_HHmmss")
 
 if (-not $OutputDir) { $OutputDir = $PSScriptRoot }
@@ -249,36 +249,23 @@ function Invoke-LERequest {
         return Invoke-RestMethod @params
     } else {
         if ($IgnoreCertificateErrors) {
-            # PS5: temporarily install a full bypass policy for this call only
-            $saved = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+            # PS5: swap to full bypass ICertificatePolicy for this call
+            $saved = [System.Net.ServicePointManager]::CertificatePolicy
+            Add-Type @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class GetLETrustAll : ICertificatePolicy {
+    public bool CheckValidationResult(ServicePoint sp, X509Certificate cert, WebRequest req, int problem) { return true; }
+}
+"@ -ErrorAction SilentlyContinue
+            [System.Net.ServicePointManager]::CertificatePolicy = New-Object GetLETrustAll
             try {
-                $request          = [System.Net.HttpWebRequest]::Create($Url)
-                $request.Method   = "GET"
-                $request.Headers.Add("Authorization", $Headers["Authorization"])
-                $request.Accept   = "application/json"
-                $request.Timeout  = 60000
-                $response         = $request.GetResponse()
-                $stream           = $response.GetResponseStream()
-                $reader           = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
-                $rawJson          = $reader.ReadToEnd()
-                $reader.Close(); $response.Close()
-                return $rawJson | ConvertFrom-Json
+                return Invoke-RestMethod -Uri $Url -Method GET -Headers $Headers -ErrorAction Stop
             } finally {
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $saved
+                [System.Net.ServicePointManager]::CertificatePolicy = $saved
             }
         } else {
-            $request          = [System.Net.HttpWebRequest]::Create($Url)
-            $request.Method   = "GET"
-            $request.Headers.Add("Authorization", $Headers["Authorization"])
-            $request.Accept   = "application/json"
-            $request.Timeout  = 60000
-            $response         = $request.GetResponse()
-            $stream           = $response.GetResponseStream()
-            $reader           = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
-            $rawJson          = $reader.ReadToEnd()
-            $reader.Close(); $response.Close()
-            return $rawJson | ConvertFrom-Json
+            return Invoke-RestMethod -Uri $Url -Method GET -Headers $Headers -ErrorAction Stop
         }
     }
 }
